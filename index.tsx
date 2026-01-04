@@ -84,10 +84,8 @@ const isValidMove = (state: GameState, player: Player, from: number, to: number 
   
   const target = getTargetPoint(player, from, dieValue);
   if (to === 'off') {
-    // Regla de salida: todas las fichas deben estar en casa
     const range = player === 'red' ? [18, 23] : [0, 5];
-    const barCount = state.bar[player];
-    if (barCount > 0) return false;
+    if (state.bar[player] > 0) return false;
     for (let i = 0; i < 24; i++) {
       if ((i < range[0] || i > range[1]) && state.points[i].checkers.includes(player)) return false;
     }
@@ -129,8 +127,6 @@ const hasAnyLegalMove = (state: GameState): boolean => {
 const App: React.FC = () => {
   const [view, setView] = useState<View>('HOME');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [rulesVisible, setRulesVisible] = useState(false);
-  const [illegalMoveMsg, setIllegalMoveMsg] = useState<string | null>(null);
   const [joinIdInput, setJoinIdInput] = useState('');
   const [invitationId, setInvitationId] = useState<string | null>(null);
   
@@ -153,10 +149,10 @@ const App: React.FC = () => {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  // AR Hand Tracking Setup
   const [isARLoading, setIsARLoading] = useState(true);
   const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
 
+  // Hand Tracking con corrección de escala 1:1
   useEffect(() => {
     if (view !== 'PLAYING') return;
     let mounted = true;
@@ -172,7 +168,8 @@ const App: React.FC = () => {
       const indexTip = landmarks[8];
       const thumbTip = landmarks[4];
       const distance = Math.sqrt(Math.pow(indexTip.x - thumbTip.x, 2) + Math.pow(indexTip.y - thumbTip.y, 2));
-      // Julie Fix: Mapeo 1:1 ya que vídeo y canvas ahora usan 'contain'
+      
+      // Mapeo absoluto al espacio del canvas
       rawHand.current = { 
         x: (1 - indexTip.x) * CANVAS_WIDTH, 
         y: indexTip.y * CANVAS_HEIGHT, 
@@ -190,13 +187,7 @@ const App: React.FC = () => {
     return () => { mounted = false; camera.stop(); hands.close(); };
   }, [view]);
 
-  // Invitaciones URL
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room');
-    if (room) setInvitationId(room);
-  }, []);
-
+  // Sync Logic Multiplayer
   const initSocket = useCallback((roomID: string, role: Player) => {
     const io = (window as any).io;
     if (!io) return;
@@ -205,14 +196,12 @@ const App: React.FC = () => {
     
     socket.on('connect', () => {
       socket.emit('join-room', { roomID, role });
-      // Julie Fix: Si soy invitado, pido el estado inicial
-      if (role === 'red') socket.emit('request-sync', { roomID });
     });
 
     socket.on('user-joined', () => {
-      // Julie Fix: Si soy el host y alguien entra, mando mi estado actual
+      // Si soy el Host y alguien entra, fuerzo sincronización total
       if (stateRef.current.userColor === 'white') {
-        socket.emit('update-game', { roomID: stateRef.current.roomID, gameState: stateRef.current });
+        socket.emit('update-game', { roomID: stateRef.current.roomID, gameState: { ...stateRef.current, opponentConnected: true } });
       }
       setState(s => ({ ...s, opponentConnected: true }));
     });
@@ -223,9 +212,8 @@ const App: React.FC = () => {
       }
     });
 
-    setState(s => ({ ...s, roomID, userColor: role, gameMode: 'ONLINE' }));
+    setState(s => ({ ...s, roomID, userColor: role, gameMode: 'ONLINE', opponentConnected: role === 'red' }));
     setView('PLAYING');
-    window.history.replaceState({}, '', window.location.pathname);
   }, []);
 
   const rollDice = useCallback((forced: boolean = false) => {
@@ -235,10 +223,7 @@ const App: React.FC = () => {
       const d2 = Math.floor(Math.random() * 6) + 1;
       const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
       
-      const tempState = { ...s, dice: [d1, d2], movesLeft: moves };
-      const blocked = !hasAnyLegalMove(tempState as GameState);
-      
-      const nextState = { ...tempState, history: [], isBlocked: blocked };
+      const nextState = { ...s, dice: [d1, d2], movesLeft: moves, history: [], isBlocked: !hasAnyLegalMove({ ...s, movesLeft: moves } as GameState) };
       if (nextState.gameMode === 'ONLINE' && socketRef.current?.connected) {
         socketRef.current.emit('update-game', { roomID: nextState.roomID, gameState: nextState });
       }
@@ -270,11 +255,13 @@ const App: React.FC = () => {
       }
       ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
       
-      if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
+      const blocked = ns.movesLeft.length > 0 && !hasAnyLegalMove(ns);
+      if (blocked) ns.isBlocked = true;
       else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.history = []; ns.isBlocked = false; }
       
       if (ns.off.white === 15) ns.winner = 'white';
       if (ns.off.red === 15) ns.winner = 'red';
+      
       if (ns.gameMode === 'ONLINE' && socketRef.current?.connected) socketRef.current.emit('update-game', { roomID: ns.roomID, gameState: ns });
       return ns;
     });
@@ -411,42 +398,83 @@ const App: React.FC = () => {
     const rect = el.getBoundingClientRect();
     const cx = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
     const cy = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
-    const scale = rect.width / CANVAS_WIDTH;
-    mouseState.current.x = cx / scale; mouseState.current.y = cy / scale;
+    
+    // Julie Fix: Cálculo dinámico de escala basado en object-fit: contain
+    const canvasRatio = CANVAS_WIDTH / CANVAS_HEIGHT;
+    const rectRatio = rect.width / rect.height;
+    let scale, ox = 0, oy = 0;
+    if (rectRatio > canvasRatio) {
+      scale = rect.height / CANVAS_HEIGHT;
+      ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+    } else {
+      scale = rect.width / CANVAS_WIDTH;
+      oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+    }
+    mouseState.current.x = (cx - ox) / scale; 
+    mouseState.current.y = (cy - oy) / scale;
   };
 
-  // IA Logic
+  // IA Inteligente - Procesa múltiples movimientos
   useEffect(() => {
     if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING') {
-      const timer = setTimeout(() => {
-        if (state.dice.length === 0) rollDice(forced => true);
-        else if (state.isBlocked) passTurn();
-        else {
-          const p = state.turn;
-          const die = state.movesLeft[0];
-          let moved = false;
-          if (state.bar[p] > 0) {
-            const target = getTargetPoint(p, -1, die);
-            if (isValidMove(state, p, -1, target, die)) { executeMove(-1, target, die); moved = true; }
-          } else {
-            const order = p === 'red' ? Array.from({length:24},(_,i)=>i) : Array.from({length:24},(_,i)=>23-i);
-            for (let idx of order) {
-              if (state.points[idx].checkers.includes(p)) {
-                const target = getTargetPoint(p, idx, die);
-                if (target < 0 || target > 23) { if (isValidMove(state, p, idx, 'off', die)) { executeMove(idx, 'off', die); moved = true; break; } } 
-                else if (isValidMove(state, p, idx, target, die)) { executeMove(idx, target, die); moved = true; break; }
+      const runAI = () => {
+        const s = stateRef.current;
+        if (s.winner || s.turn === s.userColor) return;
+
+        if (s.dice.length === 0) { rollDice(true); return; }
+        if (s.isBlocked) { passTurn(); return; }
+        if (s.movesLeft.length === 0) { passTurn(); return; }
+
+        const p = s.turn;
+        const die = s.movesLeft[0];
+        let fromIdx = -2;
+        let toIdx: number | 'off' = -2 as any;
+
+        // Lógica de salida de barra
+        if (s.bar[p] > 0) {
+          const target = getTargetPoint(p, -1, die);
+          if (isValidMove(s, p, -1, target, die)) { fromIdx = -1; toIdx = target; }
+        } else {
+          // Buscar movimientos legales
+          const order = p === 'red' ? Array.from({length:24},(_,i)=>i) : Array.from({length:24},(_,i)=>23-i);
+          for (let idx of order) {
+            if (s.points[idx].checkers.includes(p)) {
+              const target = getTargetPoint(p, idx, die);
+              if (target < 0 || target > 23) {
+                if (isValidMove(s, p, idx, 'off', die)) { fromIdx = idx; toIdx = 'off'; break; }
+              } else if (isValidMove(s, p, idx, target, die)) {
+                fromIdx = idx; toIdx = target; break;
               }
             }
           }
-          if (!moved) {
-            if (state.movesLeft.length > 1) setState(s => ({...s, movesLeft: s.movesLeft.slice(1)}));
-            else passTurn();
+        }
+
+        if (fromIdx !== -2) {
+          executeMove(fromIdx, toIdx, die);
+          // Recursión tras delay para el siguiente dado
+          setTimeout(runAI, 800);
+        } else {
+          // Si con este dado no puede pero le quedan otros (en dobles por ejemplo)
+          if (s.movesLeft.length > 1) {
+            setState(prev => ({ ...prev, movesLeft: prev.movesLeft.slice(1) }));
+            setTimeout(runAI, 400);
+          } else {
+            passTurn();
           }
         }
-      }, 1500);
+      };
+
+      const timer = setTimeout(runAI, 1200);
       return () => clearTimeout(timer);
     }
-  }, [state.turn, state.dice, state.movesLeft, state.gameMode, state.isBlocked, view]);
+  }, [state.turn, state.dice.length, state.movesLeft.length, state.gameMode, view]);
+
+  // Invitaciones URL automáticas
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const room = params.get('room');
+    if (room && view === 'HOME') setInvitationId(room);
+  }, [view]);
 
   return (
     <div className="w-full h-full bg-black relative overflow-hidden flex flex-col" 
@@ -465,16 +493,18 @@ const App: React.FC = () => {
 
       {view === 'HOME' && (
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center">
-          <h1 className="text-9xl font-black italic text-white mb-10">B-GAMMON</h1>
+          <h1 className="text-9xl font-black italic text-white mb-10 tracking-tighter">B-GAMMON</h1>
           {invitationId ? (
-            <div className="bg-stone-900 p-10 rounded-[3rem] text-center border border-white/10">
-               <h2 className="text-white font-black text-2xl mb-4">Invitación de {invitationId}</h2>
-               <button onClick={() => initSocket(invitationId, 'red')} className="bg-yellow-600 text-black font-black py-6 px-20 rounded-2xl text-xl">ACEPTAR Y JUGAR</button>
+            <div className="bg-stone-900 p-10 rounded-[3rem] text-center border border-white/10 shadow-2xl">
+               <h2 className="text-white font-black text-2xl mb-4 italic uppercase">Partida Encontrada</h2>
+               <p className="text-white/40 mb-8 text-sm uppercase tracking-widest">Sala: {invitationId}</p>
+               <button onClick={() => initSocket(invitationId, 'red')} className="bg-yellow-600 text-black font-black py-6 px-20 rounded-2xl text-xl hover:scale-105 transition-transform">ACEPTAR Y ENTRAR</button>
+               <button onClick={() => setInvitationId(null)} className="block w-full mt-6 text-white/20 text-[10px] font-bold uppercase">Cancelar</button>
             </div>
           ) : (
             <div className="flex flex-col gap-4 w-64">
-              <button onClick={() => { setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, turn:'white', gameMode: 'AI', userColor: 'white', winner: null, history: [], isBlocked: false})); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl uppercase">Vs Máquina</button>
-              <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl uppercase">Online / Amigo</button>
+              <button onClick={() => { setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, turn:'white', gameMode: 'AI', userColor: 'white', winner: null, history: [], isBlocked: false})); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl uppercase hover:bg-yellow-600 transition-colors">Vs Máquina</button>
+              <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl uppercase hover:bg-stone-700 transition-colors">Online / Amigo</button>
             </div>
           )}
         </div>
@@ -482,49 +512,49 @@ const App: React.FC = () => {
 
       {view === 'ONLINE_LOBBY' && (
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center space-y-6">
-          <button onClick={() => initSocket(Math.random().toString(36).substring(2, 8).toUpperCase(), 'white')} className="w-64 bg-yellow-600 text-black font-black py-4 rounded-xl uppercase">Crear Sala</button>
+          <button onClick={() => initSocket(Math.random().toString(36).substring(2, 8).toUpperCase(), 'white')} className="w-64 bg-yellow-600 text-black font-black py-4 rounded-xl uppercase">Crear Sala Nueva</button>
           <div className="flex gap-2">
-            <input type="text" placeholder="ID" value={joinIdInput} onChange={(e) => setJoinIdInput(e.target.value.toUpperCase())} className="bg-stone-900 border border-white/10 rounded-xl px-4 text-center text-white" />
+            <input type="text" placeholder="ID DE SALA" value={joinIdInput} onChange={(e) => setJoinIdInput(e.target.value.toUpperCase())} className="bg-stone-900 border border-white/10 rounded-xl px-4 text-center text-white font-bold" />
             <button onClick={() => initSocket(joinIdInput, 'red')} className="bg-white text-black font-black px-6 py-4 rounded-xl uppercase">Unirse</button>
           </div>
-          <button onClick={() => setView('HOME')} className="text-white/30 text-xs uppercase">Volver</button>
+          <button onClick={() => setView('HOME')} className="text-white/30 text-xs uppercase tracking-widest font-bold">Volver</button>
         </div>
       )}
 
       {view === 'PLAYING' && (
         <>
-          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50">
+          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md">
             <div className="flex items-center gap-6">
-              <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1">
+              <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner">
                 <div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div>
               </button>
               {state.gameMode === 'ONLINE' && (
                 <div className="flex gap-4 items-center">
                   <div className="flex flex-col">
-                    <span className="text-[10px] text-white/40 uppercase">{state.roomID}</span>
-                    <span className={`text-[10px] font-bold uppercase ${state.opponentConnected ? 'text-green-500' : 'text-yellow-600 animate-pulse'}`}>{state.opponentConnected ? 'OPONENTE CONECTADO' : 'ESPERANDO...'}</span>
+                    <span className="text-[10px] text-white/40 uppercase font-black">{state.roomID}</span>
+                    <span className={`text-[10px] font-bold uppercase ${state.opponentConnected ? 'text-green-500' : 'text-yellow-600 animate-pulse'}`}>{state.opponentConnected ? 'EN LÍNEA' : 'ESPERANDO RIVAL...'}</span>
                   </div>
-                  {!state.opponentConnected && <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`); alert("Link copiado!"); }} className="bg-stone-800 text-[9px] px-3 py-1 rounded text-white/50 border border-white/10">Copiar Link</button>}
+                  {state.userColor === 'white' && !state.opponentConnected && <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`); alert("¡Link copiado! Envíaselo a tu amigo."); }} className="bg-yellow-600 text-black text-[9px] px-3 py-1 rounded font-black uppercase border border-white/10">Invitar</button>}
                 </div>
               )}
             </div>
             <div className="flex gap-4 items-center">
-              <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
+              <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-xl ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600 animate-pulse' : 'text-white/30 border-white/10'}`}>
                 {state.turn === state.userColor ? 'TU TURNO' : 'TURNO RIVAL'}
               </div>
-              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase transition-all">Tirar Dados</button>
+              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-xl hover:scale-105 transition-transform">Tirar Dados</button>
             </div>
           </header>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
-            {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center"><div className="w-16 h-16 border-2 border-yellow-600 border-t-transparent rounded-full animate-spin mb-4"></div><p className="text-white/60 font-black uppercase text-[10px]">Iniciando AR...</p></div>}
+            {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center"><div className="w-16 h-16 border-2 border-yellow-600 border-t-transparent rounded-full animate-spin mb-4"></div><p className="text-white/60 font-black uppercase text-[10px] tracking-widest">Iniciando Visión AR...</p></div>}
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale brightness-50" autoPlay playsInline muted />
-            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-10 pointer-events-none w-full h-full object-contain" />
+            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-10 pointer-events-none w-full h-full object-contain drop-shadow-2xl" />
           </main>
           
-          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[60] border-r border-stone-800 transition-transform duration-500 ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col`}>
+          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[60] border-r border-stone-800 transition-transform duration-500 ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col backdrop-blur-xl`}>
              <div className="flex justify-between items-center mb-10">
-               <h3 className="text-white font-black text-xl uppercase italic">OPCIONES</h3>
+               <h3 className="text-white font-black text-xl uppercase italic">AJUSTES</h3>
                <button onClick={() => setIsMenuOpen(false)} className="text-yellow-600 text-2xl font-black">✕</button>
              </div>
              <div className="space-y-8 flex-1">
@@ -536,7 +566,7 @@ const App: React.FC = () => {
                   <label className="text-[10px] font-bold uppercase opacity-40">Opacidad Cámara</label>
                   <input type="range" min="0" max="1" step="0.01" value={state.cameraOpacity} onChange={(e) => setState(s => ({...s, cameraOpacity: parseFloat(e.target.value)}))} className="w-full accent-yellow-600" />
                 </div>
-                <button onClick={() => window.location.reload()} className="w-full bg-stone-900 py-4 rounded-xl text-white font-black text-[11px] uppercase border border-white/5">Abandonar</button>
+                <button onClick={() => window.location.reload()} className="w-full bg-red-900/20 py-4 rounded-xl text-red-500 font-black text-[11px] uppercase border border-red-500/20">Salir de la Partida</button>
              </div>
           </aside>
         </>
