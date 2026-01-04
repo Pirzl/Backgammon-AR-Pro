@@ -47,7 +47,8 @@ const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 24;
 const PINCH_THRESHOLD = 0.05;
 
-const SERVER_URL = 'https://backgammon-ar-pro-1073169142406.us-west1.run.app/';
+// Fix Crítico: Usar el mismo origin para evitar bloqueos de CORS
+const SERVER_URL = window.location.origin;
 
 const COLORS = {
   white: '#ffffff',
@@ -178,48 +179,66 @@ const App: React.FC = () => {
     if (!io) { showNotify("ERROR: SOCKET.IO NO DISPONIBLE"); return; }
     if (socketRef.current) socketRef.current.disconnect();
 
-    // Julie: Configuración quirúrgica para Cloud Run / CORS
+    // Configuración robusta para Cloud Run y CORS
     const socket = io(SERVER_URL, {
       transports: ['polling', 'websocket'],
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
       withCredentials: true,
-      extraHeaders: {
-        'Access-Control-Allow-Origin': '*'
-      }
+      path: '/socket.io/'
     });
     
     socketRef.current = socket;
 
     socket.on('connect', () => {
+      console.log('Socket conectado con exito');
       socket.emit('join-room', { roomID, role });
-      showNotify(`SALA: ${roomID}`);
-      // Si el invitado acaba de entrar, notifica al anfitrión
+      showNotify(`CONECTADO A SALA: ${roomID}`);
+      
+      // Fix Crítico: El invitado notifica explícitamente al anfitrión al conectar
       if (role === 'red') {
-        socket.emit('player-ready', { roomID, playerColor: 'red' });
+        socket.emit('player-ready', { roomID, playerColor: 'red', timestamp: Date.now() });
       }
     });
 
     socket.on('player-joined', (data: any) => {
+      console.log('Nuevo jugador en la sala:', data);
       setState(s => ({ ...s, opponentConnected: true, status: 'PLAYING' }));
-      showNotify("¡RIVAL CONECTADO!");
-      // El anfitrión sincroniza su estado al unirse alguien
+      showNotify("¡OPONENTE EN LINEA!");
+      
+      // Si soy el anfitrión, mando el estado actual para sincronizar
       if (role === 'white') {
         setState(s => {
-          socket.emit('update-game', { roomID, gameState: { points: s.points, bar: s.bar, off: s.off, turn: s.turn, dice: s.dice, movesLeft: s.movesLeft } });
+          socket.emit('update-game', { 
+            roomID, 
+            gameState: { points: s.points, bar: s.bar, off: s.off, turn: s.turn, dice: s.dice, movesLeft: s.movesLeft, opponentConnected: true } 
+          });
           return s;
         });
       }
     });
 
-    // Listener Crítico para el Anfitrión: El invitado ya aceptó y está listo
+    // Fix Crítico: Listener para que el anfitrión sepa que el invitado está listo
     socket.on('player-ready', (data: any) => {
+      console.log('Recibido player-ready:', data);
       setState(s => ({ ...s, opponentConnected: true, status: 'PLAYING' }));
-      showNotify("¡INICIANDO PARTIDA!");
+      showNotify("¡SALA SINCRONIZADA!");
+      
+      // Forzar envío de estado inicial desde el anfitrión al invitado
+      if (role === 'white') {
+        setState(s => {
+          socket.emit('update-game', { 
+            roomID, 
+            gameState: { points: s.points, bar: s.bar, off: s.off, turn: s.turn, dice: s.dice, movesLeft: s.movesLeft, opponentConnected: true, status: 'PLAYING' } 
+          });
+          return s;
+        });
+      }
     });
 
     socket.on('update-game', (data: any) => {
       if (data && data.gameState) {
+        console.log('Recibida actualización de juego:', data.gameState);
         setState(s => ({ ...s, ...data.gameState, opponentConnected: true, status: 'PLAYING' }));
         if (data.gameState.dice) playClack();
       }
@@ -230,6 +249,10 @@ const App: React.FC = () => {
       showNotify("RIVAL DESCONECTADO");
     });
 
+    socket.on('connect_error', (err: any) => {
+      console.error('Error de conexión:', err);
+    });
+
     setState(s => ({ ...s, roomID, userColor: role, gameMode: 'ONLINE', hasAccepted: true }));
     setView('PLAYING');
   }, [showNotify]);
@@ -237,7 +260,7 @@ const App: React.FC = () => {
   const copyInvite = useCallback(() => {
     const url = `${window.location.origin}${window.location.pathname}?room=${state.roomID}`;
     navigator.clipboard.writeText(url).then(() => {
-      showNotify("¡ENLACE COPIADO!");
+      showNotify("¡ENLACE DE INVITACIÓN COPIADO!");
     });
   }, [state.roomID, showNotify]);
 
@@ -283,8 +306,12 @@ const App: React.FC = () => {
       if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; }
       if (ns.off.white === 15) ns.winner = 'white';
       if (ns.off.red === 15) ns.winner = 'red';
+      
       if (ns.gameMode === 'ONLINE' && socketRef.current?.connected) {
-        socketRef.current.emit('update-game', { roomID: ns.roomID, gameState: { points: ns.points, bar: ns.bar, off: ns.off, turn: ns.turn, dice: ns.dice, movesLeft: ns.movesLeft, winner: ns.winner } });
+        socketRef.current.emit('update-game', { 
+          roomID: ns.roomID, 
+          gameState: { points: ns.points, bar: ns.bar, off: ns.off, turn: ns.turn, dice: ns.dice, movesLeft: ns.movesLeft, winner: ns.winner } 
+        });
       }
       return ns;
     });
@@ -331,7 +358,7 @@ const App: React.FC = () => {
       const { x, y } = smoothHand.current;
       const isPinch = (rawHand.current.isDetected && rawHand.current.isPinching) || mouseState.current.isDown;
       
-      if (isPinch && !lastIsPinching.current && state.turn === state.userColor) {
+      if (isPinch && !lastIsPinching.current && state.turn === state.userColor && !state.winner) {
         const zone = getTargetZone(x, y);
         if (zone?.type === 'bar' && state.bar[state.turn] > 0) grabbedRef.current = { player: state.turn, fromIndex: -1, x, y };
         else if (zone?.type === 'point' && state.points[zone.index].checkers.includes(state.turn)) grabbedRef.current = { player: state.turn, fromIndex: zone.index, x, y };
@@ -341,7 +368,10 @@ const App: React.FC = () => {
           const tz = getTargetZone(x, y);
           if (tz) {
             const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
-            if (to !== null) executeMove(grabbedRef.current.fromIndex, to as any, state.dice[0] || 1); // Simplificado para integración
+            if (to !== null) {
+              const currentDice = state.movesLeft[0] || state.dice[0] || 1;
+              executeMove(grabbedRef.current.fromIndex, to as any, currentDice);
+            }
           }
         }
         grabbedRef.current = null; setState(s => ({ ...s, grabbed: null }));
@@ -395,31 +425,41 @@ const App: React.FC = () => {
     const cx = e.clientX || (e.touches && e.touches[0].clientX);
     const cy = e.clientY || (e.touches && e.touches[0].clientY);
     const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
-    mouseState.current = { ...mouseState.current, x: (cx - rect.left - (rect.width - CANVAS_WIDTH * scale)/2) / scale, y: (cy - rect.top - (rect.height - CANVAS_HEIGHT * scale)/2) / scale };
+    const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+    const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+    mouseState.current = { ...mouseState.current, x: (cx - rect.left - ox) / scale, y: (cy - rect.top - oy) / scale };
   };
 
   return (
-    <div className="w-full h-full bg-black relative overflow-hidden" 
+    <div className="w-full h-full bg-black relative overflow-hidden select-none" 
          onMouseMove={handlePointer} onTouchMove={handlePointer}
          onMouseDown={() => mouseState.current.isDown = true} onMouseUp={() => mouseState.current.isDown = false}
          onTouchStart={(e) => { mouseState.current.isDown = true; handlePointer(e); }} onTouchEnd={() => mouseState.current.isDown = false}>
       
-      {notification && <div className="fixed top-24 left-1/2 -translate-x-1/2 bg-yellow-600 text-black font-black px-10 py-4 rounded-full z-[300] border-4 border-black uppercase text-[10px] tracking-widest">{notification}</div>}
+      {notification && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 bg-yellow-600 text-black font-black px-10 py-4 rounded-full z-[300] border-4 border-black uppercase text-[10px] tracking-widest animate-bounce">
+          {notification}
+        </div>
+      )}
 
       {view === 'HOME' && (
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-10">
-          <h1 className="text-9xl font-black italic tracking-tighter mb-10">B-GAMMON</h1>
+          <h1 className="text-9xl font-black italic tracking-tighter mb-10 text-white">B-GAMMON</h1>
           {roomFromUrl ? (
-            <div className="bg-stone-900 p-10 rounded-[3rem] text-center border border-white/10">
+            <div className="bg-stone-900 p-10 rounded-[3rem] text-center border border-white/10 shadow-4xl animate-in fade-in zoom-in duration-500">
                <h2 className="text-white font-black text-2xl uppercase mb-4 italic">Invitación de Sala</h2>
-               <div className="text-yellow-600 text-5xl font-black mb-8">{roomFromUrl}</div>
-               <button onClick={() => { initSocket(roomFromUrl, 'red'); socketRef.current?.emit('player-ready', { roomID: roomFromUrl, playerColor: 'red' }); }} className="bg-yellow-600 text-black font-black py-6 px-20 rounded-2xl text-xl hover:scale-105 transition-all uppercase">ACEPTAR E INICIAR</button>
-               <button onClick={() => setRoomFromUrl(null)} className="mt-6 block w-full text-white/20 text-[10px] font-black uppercase tracking-widest">Rechazar</button>
+               <div className="text-yellow-600 text-5xl font-black mb-8 tracking-widest">{roomFromUrl}</div>
+               <button 
+                  onClick={() => initSocket(roomFromUrl, 'red')} 
+                  className="bg-yellow-600 text-black font-black py-6 px-20 rounded-2xl text-xl hover:scale-105 active:scale-95 transition-all uppercase shadow-3xl">
+                  ACEPTAR E INICIAR
+               </button>
+               <button onClick={() => setRoomFromUrl(null)} className="mt-6 block w-full text-white/20 text-[10px] font-black uppercase tracking-widest hover:text-white transition-colors">Rechazar</button>
             </div>
           ) : (
             <div className="flex flex-col gap-4 w-64">
-              <button onClick={() => { setState(s => ({...s, gameMode: 'AI', hasAccepted: true})); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl text-lg uppercase">Vs Máquina</button>
-              <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl text-lg uppercase">Online</button>
+              <button onClick={() => { setState(s => ({...s, gameMode: 'AI', hasAccepted: true})); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl text-lg uppercase hover:scale-105 active:scale-95 transition-all">Vs Máquina</button>
+              <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl text-lg uppercase hover:scale-105 active:scale-95 transition-all border border-white/5">Online</button>
             </div>
           )}
         </div>
@@ -427,41 +467,66 @@ const App: React.FC = () => {
 
       {view === 'ONLINE_LOBBY' && (
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-10 space-y-6">
-          <button onClick={() => initSocket(Math.random().toString(36).substring(2, 8).toUpperCase(), 'white')} className="w-64 bg-yellow-600 text-black font-black py-4 rounded-xl uppercase">Crear Sala</button>
+          <button onClick={() => initSocket(Math.random().toString(36).substring(2, 8).toUpperCase(), 'white')} className="w-64 bg-yellow-600 text-black font-black py-4 rounded-xl uppercase hover:scale-105 active:scale-95 transition-all">Crear Sala</button>
           <div className="flex gap-2">
-            <input type="text" placeholder="ID" value={joinIdInput} onChange={(e) => setJoinIdInput(e.target.value.toUpperCase())} className="bg-stone-900 border border-white/10 rounded-xl px-4 text-center font-black uppercase" />
-            <button onClick={() => initSocket(joinIdInput, 'red')} className="bg-white text-black font-black px-6 py-4 rounded-xl uppercase">Unirse</button>
+            <input type="text" placeholder="ID" value={joinIdInput} onChange={(e) => setJoinIdInput(e.target.value.toUpperCase())} className="bg-stone-900 border border-white/10 rounded-xl px-4 text-center font-black uppercase text-white w-40 outline-none focus:border-yellow-600 transition-colors" />
+            <button onClick={() => initSocket(joinIdInput, 'red')} className="bg-white text-black font-black px-6 py-4 rounded-xl uppercase hover:scale-105 active:scale-95 transition-all">Unirse</button>
           </div>
-          <button onClick={() => setView('HOME')} className="text-white/30 text-[10px] uppercase font-bold tracking-widest">Volver</button>
+          <button onClick={() => setView('HOME')} className="text-white/30 text-[10px] uppercase font-bold tracking-widest hover:text-white transition-colors">Volver</button>
         </div>
       )}
 
       {view === 'PLAYING' && (
         <>
-          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50">
+          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-xl">
             <div className="flex items-center gap-6">
-              <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1">
+              <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-stone-700 transition-colors">
                 <div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div>
               </button>
               {state.gameMode === 'ONLINE' && (
                 <div className="flex flex-col">
                   <span className="text-[10px] font-black tracking-widest text-white/40 uppercase">{state.roomID}</span>
-                  <span className={`text-[10px] font-bold ${state.opponentConnected ? 'text-green-500' : 'text-yellow-600 animate-pulse'}`}>{state.opponentConnected ? 'CONECTADO' : 'ESPERANDO...'}</span>
+                  <span className={`text-[10px] font-bold tracking-widest uppercase ${state.opponentConnected ? 'text-green-500' : 'text-yellow-600 animate-pulse'}`}>
+                    {state.opponentConnected ? 'CONECTADO' : 'ESPERANDO...'}
+                  </span>
                 </div>
               )}
             </div>
             <div className="flex gap-4 items-center">
-              {state.userColor === 'white' && state.gameMode === 'ONLINE' && <button onClick={copyInvite} className="bg-stone-800 p-3 rounded-xl border border-white/5 text-yellow-600 uppercase font-black text-[10px] tracking-widest">INVITAR</button>}
-              <div className={`px-8 py-2.5 rounded-full font-black text-[10px] tracking-widest uppercase border-2 ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
+              {state.userColor === 'white' && state.gameMode === 'ONLINE' && (
+                <button onClick={copyInvite} className="bg-stone-800 p-3 rounded-xl border border-white/5 text-yellow-600 uppercase font-black text-[10px] tracking-widest hover:bg-stone-700 active:scale-95 transition-all">INVITAR</button>
+              )}
+              <div className={`px-8 py-2.5 rounded-full font-black text-[10px] tracking-widest uppercase border-2 transition-all ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
                 {state.turn === state.userColor ? 'TU TURNO' : 'TURNO RIVAL'}
               </div>
-              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[10px] disabled:opacity-10 uppercase">Tirar</button>
+              <button 
+                onClick={() => rollDice()} 
+                disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} 
+                className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[10px] disabled:opacity-10 uppercase hover:scale-105 active:scale-95 transition-all shadow-xl">
+                Tirar
+              </button>
             </div>
           </header>
 
-          <main className="flex-1 relative flex items-center justify-center">
+          <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
+            {isARLoading && (
+              <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center">
+                <div className="w-16 h-16 border-2 border-yellow-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                <p className="text-white/40 font-black tracking-[0.3em] uppercase text-[10px]">Cargando AR...</p>
+              </div>
+            )}
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-cover grayscale brightness-50" autoPlay playsInline muted />
-            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-10 pointer-events-none drop-shadow-2xl" />
+            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-10 pointer-events-none drop-shadow-2xl max-w-full max-h-full" />
+            
+            {state.winner && (
+              <div className="absolute inset-0 z-[200] bg-stone-950/90 flex flex-col items-center justify-center backdrop-blur-xl animate-in fade-in zoom-in duration-700">
+                <div className="text-center p-12 border border-white/5 rounded-[4rem] bg-stone-900/50 shadow-4xl">
+                  <h2 className="text-8xl font-black text-yellow-600 italic mb-2 tracking-tighter uppercase">{state.winner === state.userColor ? 'VICTORIA' : 'DERROTA'}</h2>
+                  <p className="text-white/40 font-bold uppercase tracking-[0.5em] text-xs mb-10">Partida Finalizada</p>
+                  <button onClick={() => window.location.reload()} className="bg-white text-black font-black px-16 py-6 rounded-full uppercase tracking-widest active:scale-95 shadow-4xl hover:bg-yellow-600 transition-all">Continuar</button>
+                </div>
+              </div>
+            )}
           </main>
         </>
       )}
