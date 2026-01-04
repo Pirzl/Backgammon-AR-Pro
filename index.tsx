@@ -185,7 +185,7 @@ const App: React.FC = () => {
       playClack();
       const ns: GameState = { ...s, dice: [d1, d2], movesLeft: moves, history: [] };
       
-      // ONLINE: Estado Maestro - Transmitimos tirada de dados
+      // ONLINE: Sincronización Maestra - Transmitimos estado de dados
       if (ns.gameMode === 'ONLINE' && socketRef.current?.connected) {
         socketRef.current.emit('update-game', {
           roomID: ns.roomID,
@@ -213,23 +213,23 @@ const App: React.FC = () => {
     });
   }, [showNotify]);
 
-  // --- SOCKET Y RED (MEJORADO PARA CLOUD RUN, CORS Y SINCRONIZACIÓN MAESTRA) ---
+  // --- SOCKET Y RED (MEJORADO PARA CLOUD RUN, CORS Y HANDSHAKE MAESTRO) ---
   const initSocket = useCallback((roomID: string, role: Player) => {
     const io = (window as any).io;
     if (!io) { showNotify("ERROR: SOCKET.IO NO CARGADO"); return; }
     if (socketRef.current) socketRef.current.disconnect();
 
-    // Julie: Configuración optimizada para Cloud Run y CORS
+    // Julie: Configuración crítica para Cloud Run + CORS + Sticky Sessions
     const socket = io(SERVER_URL, {
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'], // Polling primero para asegurar handshake
       withCredentials: true,
       extraHeaders: {
         'Access-Control-Allow-Origin': '*'
       },
       reconnection: true,
       reconnectionAttempts: 50,
-      reconnectionDelay: 1000,
-      timeout: 30000,
+      reconnectionDelay: 2000,
+      timeout: 45000,
       forceNew: true
     });
     
@@ -238,16 +238,16 @@ const App: React.FC = () => {
     socket.on('connect', () => {
       socket.emit('join-room', { roomID, role });
       showNotify(`CONECTADO A SALA: ${roomID}`);
-      // El invitado solicita el estado actual al anfitrión al conectar
+      // El invitado pide el estado actual del anfitrión para empezar idénticos
       if (role === 'red') {
         socket.emit('request-sync', { roomID });
       }
     });
 
-    // Handshake Sincronizado: Ambos jugadores reciben 'player-joined'
+    // Handshake Sincronizado: El anfitrión detecta que el rival entró
     socket.on('player-joined', (data: any) => {
       setState(s => {
-        // El Host (blanco) envía el tablero completo al nuevo rival
+        // El Host (blanco) envía el tablero completo al nuevo invitado
         if (role === 'white' && socketRef.current?.connected) {
           socketRef.current.emit('update-game', { 
             roomID, 
@@ -265,17 +265,17 @@ const App: React.FC = () => {
         }
         return { ...s, opponentConnected: true, status: 'PLAYING' };
       });
-      showNotify("¡RIVAL EN LÍNEA!");
+      showNotify("¡OPONENTE CONECTADO!");
     });
 
-    // ESTADO MAESTRO: Actualización total del tablero
+    // ESTADO MAESTRO (Master State): Actualización absoluta del juego
     socket.on('update-game', (data: any) => {
       if (data && data.gameState) {
         setState(s => ({ 
           ...s, 
           ...data.gameState, 
           opponentConnected: true, 
-          status: 'PLAYING' // Forzamos vista PLAYING si llega actualización
+          status: 'PLAYING' 
         }));
         if (data.gameState.dice) playClack();
       }
@@ -307,11 +307,12 @@ const App: React.FC = () => {
       showNotify("OPONENTE DESCONECTADO");
     });
 
-    socket.on('connect_error', () => {
-      console.warn("Retrying multiplayer connection...");
+    socket.on('connect_error', (err: any) => {
+      console.warn("Retrying multiplayer link...", err);
     });
 
-    // Cambiamos vista y estado inicial. El Invitado entra directo a PLAYING tras Aceptar.
+    // Cambiamos vista y estado inicial.
+    // El Invitado (red) entra directamente a PLAYING ocultando el lobby.
     setState(s => ({ 
       ...s, 
       roomID, 
@@ -453,7 +454,7 @@ const App: React.FC = () => {
       if (ns.off.white === 15) ns.winner = 'white';
       if (ns.off.red === 15) ns.winner = 'red';
 
-      // ONLINE: Estado Maestro - Sincronizamos tablero completo tras cada movimiento
+      // ONLINE: Sincronización Maestra - Enviamos el tablero completo
       if (!isRemote && ns.gameMode === 'ONLINE' && socketRef.current?.connected) {
         socketRef.current.emit('update-game', {
           roomID: ns.roomID,
@@ -724,7 +725,7 @@ const App: React.FC = () => {
                       {state.opponentConnected ? 'CONECTADO' : 'ESPERANDO...'}
                     </span>
                   </div>
-                  {/* Julie: El botón de Copiar Link solo es para el Anfitrión (blanco) */}
+                  {/* Julie: El botón de Copiar Link es exclusivo del Anfitrión (blanco) */}
                   {state.userColor === 'white' && (
                     <button onClick={copyInvite} className="bg-stone-800 p-2 rounded-lg border border-white/5 hover:bg-stone-700 active:scale-95 transition-all">
                       <svg className="w-4 h-4 text-yellow-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 00-2 2v14a2 2 0 002 2h11a2 2 0 002-2V7a2 2 0 00-2-2m-3-4H4a2 2 0 00-2 2v14h2V3h12V1z"/></svg>
@@ -769,7 +770,7 @@ const App: React.FC = () => {
                   <button onClick={() => setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, history: [], dice: [], movesLeft: []}))} className="w-full bg-red-950/20 border border-red-500/20 py-4 rounded-xl text-red-500 font-black text-[10px] uppercase tracking-widest hover:bg-red-950/40 transition-colors">Reiniciar Tablero</button>
                 </div>
              </div>
-             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v3.3 Multi-Sync Edition</div>
+             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v3.4 Multi-Master Edition</div>
           </aside>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden" style={{ touchAction: 'none' }}>
