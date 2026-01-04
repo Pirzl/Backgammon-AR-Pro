@@ -47,6 +47,7 @@ const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 24;
 const PINCH_THRESHOLD = 0.05;
 
+// URL DE PRODUCCIÓN (CLOUD RUN)
 const SERVER_URL = 'https://backgammon-ar-pro-1073169142406.us-west1.run.app/';
 
 const COLORS = {
@@ -83,7 +84,7 @@ const initialPoints = (): Point[] => {
   return p;
 };
 
-// --- HOOK: HAND TRACKING (FIXED LOADGRAPH) ---
+// --- HOOK: HAND TRACKING ---
 const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isActive: boolean) => {
   const [isARLoading, setIsARLoading] = useState(true);
   const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
@@ -92,31 +93,19 @@ const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isA
 
   useEffect(() => {
     if (!isActive) return;
-
     let mounted = true;
-
     const initTracking = async () => {
       const HandsClass = (window as any).Hands;
       const CameraClass = (window as any).Camera;
-      
-      // Julie Fix: Esperar a que las librerías globales existan antes de llamar constructores
       if (!HandsClass || !CameraClass || !videoRef.current) {
         if (mounted) setTimeout(initTracking, 300);
         return;
       }
-
       try {
         const hands = new HandsClass({
           locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
         });
-
-        hands.setOptions({
-          maxNumHands: 1,
-          modelComplexity: 1,
-          minDetectionConfidence: 0.6,
-          minTrackingConfidence: 0.6,
-        });
-
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
         hands.onResults((results: any) => {
           if (!mounted) return;
           if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
@@ -128,45 +117,24 @@ const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isA
               const nx = (1 - Number(indexTip.x)) * CANVAS_WIDTH;
               const ny = Number(indexTip.y) * CANVAS_HEIGHT;
               if (Number.isFinite(nx) && Number.isFinite(ny)) {
-                rawHand.current = {
-                  x: nx,
-                  y: ny,
-                  isPinching: distance < PINCH_THRESHOLD,
-                  isDetected: true
-                };
+                rawHand.current = { x: nx, y: ny, isPinching: distance < PINCH_THRESHOLD, isDetected: true };
               }
             }
-          } else {
-            rawHand.current.isDetected = false;
-          }
+          } else { rawHand.current.isDetected = false; }
         });
-
         handsRef.current = hands;
-
         cameraRef.current = new CameraClass(videoRef.current, {
-          onFrame: async () => {
-            if (mounted && videoRef.current && handsRef.current) {
-              await handsRef.current.send({ image: videoRef.current });
-            }
-          },
-          width: 1280,
-          height: 720,
+          onFrame: async () => { if (mounted && videoRef.current && handsRef.current) await handsRef.current.send({ image: videoRef.current }); },
+          width: 1280, height: 720,
         });
-        
         await cameraRef.current.start();
         if (mounted) setIsARLoading(false);
       } catch (err) {
-        console.warn("MediaPipe Sincronización fallida, reintentando...", err);
         if (mounted) setTimeout(initTracking, 1000);
       }
     };
-
     initTracking();
-    return () => {
-      mounted = false;
-      cameraRef.current?.stop();
-      if (handsRef.current) handsRef.current.close();
-    };
+    return () => { mounted = false; cameraRef.current?.stop(); if (handsRef.current) handsRef.current.close(); };
   }, [isActive, videoRef]);
 
   return { rawHand, isARLoading };
@@ -178,6 +146,7 @@ const App: React.FC = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
   const [joinIdInput, setJoinIdInput] = useState('');
+  const [roomFromUrl, setRoomFromUrl] = useState<string | null>(null);
   
   const socketRef = useRef<any>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -205,22 +174,17 @@ const App: React.FC = () => {
     setTimeout(() => setNotification(null), 3000);
   }, []);
 
-  // --- LÓGICA DE DADOS (TURN INDEPENDENT FOR IA) ---
+  // --- LÓGICA DE DADOS ---
   const rollDice = useCallback((forced: boolean = false) => {
     setState(s => {
-      // Si no es IA forzada y no es el turno del usuario, no tirar
       if (!forced && (s.movesLeft.length > 0 || s.turn !== s.userColor || s.winner)) return s;
-      
       const d1 = Math.floor(Math.random() * 6) + 1;
       const d2 = Math.floor(Math.random() * 6) + 1;
       const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
-      
       if (s.gameMode === 'ONLINE' && socketRef.current?.connected) {
         socketRef.current.emit('dice', { dice: [d1, d2], moves, roomID: s.roomID });
       }
-      
       playClack();
-      
       const ns: GameState = { ...s, dice: [d1, d2], movesLeft: moves, history: [] };
       if (!hasAnyLegalMoves(ns)) {
         showNotify("SIN MOVIMIENTOS: TURNO CEDIDO");
@@ -230,18 +194,18 @@ const App: React.FC = () => {
     });
   }, [showNotify]);
 
-  // --- SOCKET Y RED ---
+  // --- SOCKET Y RED (MEJORADO PARA CLOUD RUN) ---
   const initSocket = useCallback((roomID: string, role: Player) => {
     const io = (window as any).io;
     if (!io) { showNotify("ERROR: SOCKET.IO NO CARGADO"); return; }
-    
     if (socketRef.current) socketRef.current.disconnect();
 
+    // Julie: Forzamos polling inicial para evitar bloqueos de firewall
     const socket = io(SERVER_URL, {
       transports: ['polling', 'websocket'],
       reconnection: true,
-      reconnectionAttempts: 5,
-      timeout: 10000,
+      reconnectionAttempts: 15,
+      timeout: 15000,
       forceNew: true
     });
     
@@ -250,11 +214,62 @@ const App: React.FC = () => {
     socket.on('connect', () => {
       socket.emit('join-room', { roomID, role });
       showNotify(`CONECTADO: SALA ${roomID}`);
+      // Si somos invitados, pedimos sincronización inmediata
+      if (role === 'red') {
+        socket.emit('request-sync', { roomID });
+      }
     });
 
     socket.on('opponent-joined', () => {
-      setState(s => ({ ...s, opponentConnected: true, status: 'PLAYING' }));
+      setState(s => {
+        // El Host transmite su tablero actual al nuevo rival
+        if (role === 'white' && socketRef.current) {
+          socketRef.current.emit('sync-state', { 
+            roomID, 
+            points: s.points, 
+            bar: s.bar, 
+            off: s.off,
+            turn: s.turn,
+            dice: s.dice,
+            movesLeft: s.movesLeft
+          });
+        }
+        return { ...s, opponentConnected: true, status: 'PLAYING' };
+      });
       showNotify("¡RIVAL CONECTADO!");
+    });
+
+    socket.on('sync-state', (data: any) => {
+      if (role === 'red') {
+        setState(s => ({ 
+          ...s, 
+          points: data.points, 
+          bar: data.bar, 
+          off: data.off,
+          turn: data.turn,
+          dice: data.dice,
+          movesLeft: data.movesLeft,
+          opponentConnected: true,
+          status: 'PLAYING'
+        }));
+      }
+    });
+
+    socket.on('request-sync', () => {
+      if (role === 'white') {
+        setState(s => {
+          socket.emit('sync-state', { 
+            roomID, 
+            points: s.points, 
+            bar: s.bar, 
+            off: s.off,
+            turn: s.turn,
+            dice: s.dice,
+            movesLeft: s.movesLeft
+          });
+          return s;
+        });
+      }
     });
 
     socket.on('opponent-disconnected', () => {
@@ -276,7 +291,7 @@ const App: React.FC = () => {
     });
 
     socket.on('connect_error', () => {
-      showNotify("FALLO DE RED: MODO LOCAL");
+      console.warn("Retrying connection...");
     });
 
     setState(s => ({ 
@@ -298,15 +313,14 @@ const App: React.FC = () => {
     });
   }, [state.roomID, showNotify]);
 
+  // Detección de Invitación por URL
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const room = urlParams.get('room');
     if (room && view === 'HOME') {
-      const rid = room.toUpperCase();
-      setJoinIdInput(rid);
-      initSocket(rid, 'red');
+      setRoomFromUrl(room.toUpperCase());
     }
-  }, [view, initSocket]);
+  }, [view]);
 
   // --- LÓGICA DE COORDENADAS ---
   const getPointPosition = useCallback((idx: number) => {
@@ -349,7 +363,6 @@ const App: React.FC = () => {
     if (movesLeft.length === 0) return null;
     const direction = player === 'red' ? 1 : -1;
     if (bar[player] > 0 && from !== -1) return null;
-    
     let dist: number;
     if (to === 'off') {
       if (!canBearOff(player, points, bar[player])) return null;
@@ -363,7 +376,6 @@ const App: React.FC = () => {
       }
       return null;
     }
-
     const targetIdx = Number(to);
     if (targetIdx < 0 || targetIdx > 23) return null;
     dist = from === -1 ? (player === 'red' ? (targetIdx + 1) : (24 - targetIdx)) : (targetIdx - from) * direction;
@@ -401,34 +413,24 @@ const App: React.FC = () => {
     if (!isRemote && state.gameMode === 'ONLINE' && socketRef.current?.connected) {
       socketRef.current.emit('move', { from, to, die, roomID: state.roomID });
     }
-
     setState(curr => {
-      const snapshot = JSON.parse(JSON.stringify({
-        points: curr.points, bar: curr.bar, off: curr.off,
-        movesLeft: curr.movesLeft, turn: curr.turn, dice: curr.dice
-      }));
-
+      const snapshot = JSON.parse(JSON.stringify({ points: curr.points, bar: curr.bar, off: curr.off, movesLeft: curr.movesLeft, turn: curr.turn, dice: curr.dice }));
       const ns = JSON.parse(JSON.stringify(curr)) as GameState;
       if (!isRemote) ns.history.push(snapshot);
-
       const p = ns.turn;
       if (from === -1) ns.bar[p]--; else ns.points[from].checkers.pop();
       if (to === 'off') ns.off[p]++;
       else {
         const target = ns.points[to as number];
-        if (target.checkers.length === 1 && target.checkers[0] !== p) {
-          ns.bar[target.checkers[0]]++;
-          target.checkers = [p];
-        } else target.checkers.push(p);
+        if (target.checkers.length === 1 && target.checkers[0] !== p) { ns.bar[target.checkers[0]]++; target.checkers = [p]; } 
+        else target.checkers.push(p);
       }
       const dieIdx = ns.movesLeft.indexOf(die);
       if (dieIdx > -1) ns.movesLeft.splice(dieIdx, 1);
-      
       if (ns.movesLeft.length === 0 || !hasAnyLegalMoves(ns)) {
         ns.turn = ns.turn === 'white' ? 'red' : 'white';
         ns.dice = []; ns.movesLeft = []; ns.history = [];
       }
-      
       if (ns.off.white === 15) ns.winner = 'white';
       if (ns.off.red === 15) ns.winner = 'red';
       return ns;
@@ -445,22 +447,17 @@ const App: React.FC = () => {
     playClack();
   }, [state.history, state.gameMode]);
 
-  // --- LÓGICA IA ---
+  // --- LÓGICA IA (FIXED) ---
   useEffect(() => {
     if (view !== 'PLAYING' || state.gameMode !== 'AI' || state.turn === state.userColor || state.winner) return;
-    
     const aiTimer = setTimeout(() => {
       if (isAiActing.current) return;
       isAiActing.current = true;
-
-      if (state.dice.length === 0 && state.movesLeft.length === 0) {
-        // IA tira dados forzando el bypass del chequeo de turno
-        rollDice(true);
-      } else {
+      if (state.dice.length === 0 && state.movesLeft.length === 0) { rollDice(true); } 
+      else {
         const p = state.turn;
         const possible: any[] = [];
         const uniqueDice = Array.from(new Set(state.movesLeft));
-        
         if (state.bar[p] > 0) {
           uniqueDice.forEach(d => {
             const to = p === 'red' ? d - 1 : 24 - d;
@@ -479,9 +476,7 @@ const App: React.FC = () => {
           }
         }
         if (possible.length > 0) {
-          const move = possible.find(m => m.to === 'off') || 
-                       possible.find(m => m.to !== 'off' && state.points[m.to].checkers.length === 1 && state.points[m.to].checkers[0] !== p) ||
-                       possible[Math.floor(Math.random() * possible.length)];
+          const move = possible.find(m => m.to === 'off') || possible.find(m => m.to !== 'off' && state.points[m.to].checkers.length === 1 && state.points[m.to].checkers[0] !== p) || possible[Math.floor(Math.random() * possible.length)];
           executeMove(move.from, move.to, move.die);
         }
       }
@@ -499,35 +494,25 @@ const App: React.FC = () => {
       if (!canvas) { animId = requestAnimationFrame(draw); return; }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
-      
       const LERP = 0.25;
       const isMouse = mouseState.current.isDown;
       const targetX = Number((rawHand.current.isDetected && !isMouse) ? rawHand.current.x : mouseState.current.x);
       const targetY = Number((rawHand.current.isDetected && !isMouse) ? rawHand.current.y : mouseState.current.y);
-      
       if (Number.isFinite(targetX) && Number.isFinite(targetY)) {
         smoothHand.current.x += (targetX - smoothHand.current.x) * LERP;
         smoothHand.current.y += (targetY - smoothHand.current.y) * LERP;
       }
-      
       const { x, y } = smoothHand.current;
       const isPinch = (rawHand.current.isDetected && rawHand.current.isPinching) || isMouse;
       const justPressed = isPinch && !lastIsPinching.current;
       const justReleased = !isPinch && lastIsPinching.current;
       lastIsPinching.current = isPinch;
-      
       if (justPressed && state.turn === state.userColor && !state.winner) {
         setState(curr => {
           if (curr.grabbed || curr.movesLeft.length === 0) return curr;
           const zone = getTargetZone(x, y);
-          if (zone?.type === 'bar' && curr.bar[curr.turn] > 0) {
-            grabbedRef.current = { player: curr.turn, fromIndex: -1, x, y };
-            return { ...curr, grabbed: grabbedRef.current };
-          }
-          if (zone?.type === 'point' && curr.points[zone.index].checkers.includes(curr.turn)) {
-            grabbedRef.current = { player: curr.turn, fromIndex: zone.index, x, y };
-            return { ...curr, grabbed: grabbedRef.current };
-          }
+          if (zone?.type === 'bar' && curr.bar[curr.turn] > 0) { grabbedRef.current = { player: curr.turn, fromIndex: -1, x, y }; return { ...curr, grabbed: grabbedRef.current }; }
+          if (zone?.type === 'point' && curr.points[zone.index].checkers.includes(curr.turn)) { grabbedRef.current = { player: curr.turn, fromIndex: zone.index, x, y }; return { ...curr, grabbed: grabbedRef.current }; }
           return curr;
         });
       } else if (justReleased) {
@@ -536,51 +521,35 @@ const App: React.FC = () => {
             const tz = getTargetZone(x, y);
             if (tz) {
               const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
-              if (to !== null) {
-                const d = isMoveLegal(curr.grabbed.fromIndex, to as any, curr.turn, curr.points, curr.bar, curr.movesLeft);
-                if (d) executeMove(curr.grabbed.fromIndex, to as any, d);
-              }
+              if (to !== null) { const d = isMoveLegal(curr.grabbed.fromIndex, to as any, curr.turn, curr.points, curr.bar, curr.movesLeft); if (d) executeMove(curr.grabbed.fromIndex, to as any, d); }
             }
           }
           grabbedRef.current = null; return { ...curr, grabbed: null };
         });
       }
-
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
       const bW = 960; const xB = (CANVAS_WIDTH - bW) / 2;
-      
       ctx.globalAlpha = state.boardOpacity;
       ctx.fillStyle = '#1c1917'; ctx.fillRect(xB, BOARD_PADDING, bW, CANVAS_HEIGHT - BOARD_PADDING * 2);
-      
       for (let i = 0; i < 24; i++) {
         const pos = getPointPosition(i);
         ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.95)' : 'rgba(190, 160, 110, 0.8)';
         ctx.beginPath(); ctx.moveTo(pos.x - 38, pos.y); ctx.lineTo(pos.x + 38, pos.y);
         ctx.lineTo(pos.x, pos.isTop ? pos.y + 260 : pos.y - 260); ctx.fill();
-        state.points[i].checkers.forEach((p, idx) => {
-          if (grabbedRef.current?.fromIndex === i && idx === state.points[i].checkers.length - 1) return;
-          drawChecker(ctx, pos.x, pos.isTop ? pos.y + 36 + idx * 42 : pos.y - 36 - idx * 42, p);
-        });
+        state.points[i].checkers.forEach((p, idx) => { if (grabbedRef.current?.fromIndex === i && idx === state.points[i].checkers.length - 1) return; drawChecker(ctx, pos.x, pos.isTop ? pos.y + 36 + idx * 42 : pos.y - 36 - idx * 42, p); });
       }
-
       ctx.fillStyle = '#0c0a09'; ctx.fillRect(CANVAS_WIDTH/2 - 32, BOARD_PADDING, 64, CANVAS_HEIGHT - BOARD_PADDING * 2);
       ['white', 'red'].forEach(p => {
         const count = state.bar[p as Player];
         const isMe = p === state.userColor;
         const vY = isMe ? CANVAS_HEIGHT - 120 : 120;
-        for(let i=0; i<count; i++) {
-          if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === count-1) continue;
-          drawChecker(ctx, CANVAS_WIDTH/2, vY + (isMe ? -i*42 : i*42), p as Player);
-        }
+        for(let i=0; i<count; i++) { if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === count-1) continue; drawChecker(ctx, CANVAS_WIDTH/2, vY + (isMe ? -i*42 : i*42), p as Player); }
       });
-
       for(let i=0; i<state.off.red; i++) drawChecker(ctx, xB - 60, (isReversed ? CANVAS_HEIGHT - 80 : 80) + (isReversed ? -i*12 : i*12), 'red');
       for(let i=0; i<state.off.white; i++) drawChecker(ctx, xB - 60, (isReversed ? 80 : CANVAS_HEIGHT - 80) + (isReversed ? i*12 : -i*12), 'white');
-      
       ctx.globalAlpha = 1.0; 
       if (state.dice.length > 0) state.dice.forEach((d, i) => drawDieSprite(ctx, CANVAS_WIDTH/2 + (i === 0 ? -160 : 160), CANVAS_HEIGHT/2, d, state.turn));
       if (grabbedRef.current) drawChecker(ctx, x, y, grabbedRef.current.player, true);
-      
       if (rawHand.current.isDetected || isMouse) {
         ctx.beginPath(); ctx.arc(x, y, isPinch ? 12 : 24, 0, Math.PI * 2); 
         ctx.strokeStyle = isPinch ? COLORS.gold : 'rgba(255,255,255,0.8)'; 
@@ -604,16 +573,9 @@ const App: React.FC = () => {
         const g = ctx.createRadialGradient(gradX, gradY, 4, Number(x), Number(y), CHECKER_RADIUS);
         if (p === 'white') { g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#999999'); } else { g.addColorStop(0, '#ff4444'); g.addColorStop(1, '#660000'); }
         ctx.fillStyle = g; ctx.fill(); 
-      } else {
-        ctx.fillStyle = p === 'white' ? '#999999' : '#660000';
-        ctx.fill();
-      }
-    } catch (e) {
-      ctx.fillStyle = p === 'white' ? '#999999' : '#660000';
-      ctx.fill();
-    }
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2; ctx.stroke();
-    ctx.restore();
+      } else { ctx.fillStyle = p === 'white' ? '#999999' : '#660000'; ctx.fill(); }
+    } catch (e) { ctx.fillStyle = p === 'white' ? '#999999' : '#660000'; ctx.fill(); }
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
   };
 
   const drawDieSprite = (ctx: CanvasRenderingContext2D, x: number, y: number, v: number, player: Player) => {
@@ -638,18 +600,12 @@ const App: React.FC = () => {
     const rect = canvas.getBoundingClientRect();
     const cx = Number(e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0));
     const cy = Number(e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 0));
-    
     const scale = Math.min((rect.width as number) / CANVAS_WIDTH, (rect.height as number) / CANVAS_HEIGHT);
     const ox = ((rect.width as number) - CANVAS_WIDTH * scale) / 2;
     const oy = ((rect.height as number) - CANVAS_HEIGHT * scale) / 2;
-    
     const nx = (cx - (rect.left as number) - ox) / scale;
     const ny = (cy - (rect.top as number) - oy) / scale;
-    
-    if (Number.isFinite(nx) && Number.isFinite(ny)) {
-      mouseState.current.x = Number(nx);
-      mouseState.current.y = Number(ny);
-    }
+    if (Number.isFinite(nx) && Number.isFinite(ny)) { mouseState.current.x = Number(nx); mouseState.current.y = Number(ny); }
   };
 
   return (
@@ -673,16 +629,29 @@ const App: React.FC = () => {
             <h1 className="text-9xl font-black text-white italic tracking-tighter leading-none">B-GAMMON</h1>
             <p className="text-yellow-600 font-bold tracking-[0.5em] text-[10px] uppercase mt-2">Professional AR Edition</p>
           </div>
-          <div className="grid grid-cols-1 gap-4 w-full max-w-md">
-            <button onClick={() => { setState(s => ({...s, gameMode: 'AI', hasAccepted: true, history: []})); setView('PLAYING'); playClack(); }} 
-                    className="bg-white text-black font-black px-8 py-6 rounded-2xl text-lg hover:scale-[1.02] transition-all shadow-2xl active:scale-95 flex items-center justify-between group">
-              VS MÁQUINA <span className="opacity-30 group-hover:opacity-100 transition-opacity">→</span>
-            </button>
-            <button onClick={() => setView('ONLINE_LOBBY')}
-                    className="bg-stone-800 text-white font-black px-8 py-6 rounded-2xl text-lg border border-white/5 hover:bg-stone-700 transition-all flex items-center justify-between group">
-              MULTIJUGADOR ONLINE <span className="text-yellow-600 opacity-50 group-hover:opacity-100 transition-opacity">●</span>
-            </button>
-          </div>
+          
+          {roomFromUrl ? (
+            <div className="w-full max-w-md bg-stone-900 p-10 rounded-[3rem] border border-white/10 text-center animate-in fade-in slide-in-from-bottom-10 duration-700">
+               <h2 className="text-white font-black text-2xl uppercase mb-4 tracking-tight italic">Invitación de Sala</h2>
+               <div className="text-yellow-600 text-5xl font-black mb-8 tracking-widest">{roomFromUrl}</div>
+               <button onClick={() => initSocket(roomFromUrl, 'red')} 
+                       className="w-full bg-yellow-600 text-black font-black py-6 rounded-2xl text-xl hover:scale-105 transition-all shadow-3xl active:scale-95 uppercase">
+                 ACEPTAR E INICIAR
+               </button>
+               <button onClick={() => setRoomFromUrl(null)} className="mt-6 text-white/20 text-[10px] font-black uppercase tracking-widest">Rechazar</button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 w-full max-w-md">
+              <button onClick={() => { setState(s => ({...s, gameMode: 'AI', hasAccepted: true, history: []})); setView('PLAYING'); playClack(); }} 
+                      className="bg-white text-black font-black px-8 py-6 rounded-2xl text-lg hover:scale-[1.02] transition-all shadow-2xl active:scale-95 flex items-center justify-between group">
+                VS MÁQUINA <span className="opacity-30 group-hover:opacity-100 transition-opacity">→</span>
+              </button>
+              <button onClick={() => setView('ONLINE_LOBBY')}
+                      className="bg-stone-800 text-white font-black px-8 py-6 rounded-2xl text-lg border border-white/5 hover:bg-stone-700 transition-all flex items-center justify-between group">
+                MULTIJUGADOR ONLINE <span className="text-yellow-600 opacity-50 group-hover:opacity-100 transition-opacity">●</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -741,7 +710,6 @@ const App: React.FC = () => {
                <h3 className="text-white font-black text-xl italic uppercase tracking-tighter">AJUSTES AR</h3>
                <button onClick={() => setIsMenuOpen(false)} className="text-yellow-600 font-black text-xl hover:scale-110 transition-transform">✕</button>
              </div>
-             
              <div className="space-y-8 flex-1">
                 <div className="space-y-3">
                   <div className="flex justify-between">
@@ -750,7 +718,6 @@ const App: React.FC = () => {
                   </div>
                   <input type="range" min="0" max="1" step="0.01" value={state.boardOpacity} onChange={(e) => setState(s => ({...s, boardOpacity: parseFloat(e.target.value)}))} className="w-full accent-yellow-600 h-1 bg-stone-800 rounded-lg appearance-none cursor-pointer" />
                 </div>
-                
                 <div className="space-y-3">
                   <div className="flex justify-between">
                     <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">Opacidad Cámara</label>
@@ -758,14 +725,12 @@ const App: React.FC = () => {
                   </div>
                   <input type="range" min="0" max="1" step="0.01" value={state.cameraOpacity} onChange={(e) => setState(s => ({...s, cameraOpacity: parseFloat(e.target.value)}))} className="w-full accent-yellow-600 h-1 bg-stone-800 rounded-lg appearance-none cursor-pointer" />
                 </div>
-
                 <div className="pt-8 border-t border-white/5 space-y-4">
                   <button onClick={() => window.location.reload()} className="w-full bg-stone-900 border border-white/10 py-4 rounded-xl text-white font-black text-[10px] uppercase tracking-widest hover:bg-stone-800 transition-colors">Menú Principal</button>
                   <button onClick={() => setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, history: [], dice: [], movesLeft: []}))} className="w-full bg-red-950/20 border border-red-500/20 py-4 rounded-xl text-red-500 font-black text-[10px] uppercase tracking-widest hover:bg-red-950/40 transition-colors">Reiniciar Tablero</button>
                 </div>
              </div>
-             
-             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v2.9.2 Pro Edition</div>
+             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v3.1 Production Edition</div>
           </aside>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden" style={{ touchAction: 'none' }}>
@@ -775,12 +740,10 @@ const App: React.FC = () => {
                 <p className="text-white font-black tracking-widest text-[10px] uppercase animate-pulse">Sincronizando Realidad...</p>
               </div>
             )}
-            
             <div className="ar-container relative w-full h-full max-w-[1200px] max-h-[700px] shadow-inner">
               <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-cover grayscale brightness-75 transition-opacity duration-300" autoPlay playsInline muted />
               <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="absolute inset-0 w-full h-full object-contain z-10 pointer-events-none drop-shadow-2xl" />
             </div>
-
             {state.winner && (
               <div className="absolute inset-0 z-[200] bg-stone-950/90 flex flex-col items-center justify-center backdrop-blur-xl animate-in fade-in zoom-in duration-700">
                 <div className="text-center p-12 border border-white/5 rounded-[4rem] bg-stone-900/50 shadow-4xl">
