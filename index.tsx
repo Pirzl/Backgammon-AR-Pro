@@ -181,31 +181,55 @@ const App: React.FC = () => {
       const d1 = Math.floor(Math.random() * 6) + 1;
       const d2 = Math.floor(Math.random() * 6) + 1;
       const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
-      if (s.gameMode === 'ONLINE' && socketRef.current?.connected) {
-        socketRef.current.emit('dice', { dice: [d1, d2], moves, roomID: s.roomID });
-      }
+      
       playClack();
       const ns: GameState = { ...s, dice: [d1, d2], movesLeft: moves, history: [] };
+      
+      // ONLINE: Sincronización de estado completa tras tirar dados
+      if (ns.gameMode === 'ONLINE' && socketRef.current?.connected) {
+        socketRef.current.emit('update-game', {
+          roomID: ns.roomID,
+          gameState: { dice: [d1, d2], movesLeft: moves, status: 'PLAYING' }
+        });
+      }
+
       if (!hasAnyLegalMoves(ns)) {
         showNotify("SIN MOVIMIENTOS: TURNO CEDIDO");
-        setTimeout(() => setState(prev => ({...prev, turn: prev.turn === 'white' ? 'red' : 'white', dice: [], movesLeft: []})), 1500);
+        setTimeout(() => {
+          setState(prev => {
+            const nextTurn: Player = prev.turn === 'white' ? 'red' : 'white';
+            const switchedState: GameState = { ...prev, turn: nextTurn, dice: [], movesLeft: [] };
+            if (switchedState.gameMode === 'ONLINE' && socketRef.current?.connected) {
+              socketRef.current.emit('update-game', { 
+                roomID: prev.roomID, 
+                gameState: { turn: nextTurn, dice: [], movesLeft: [] } 
+              });
+            }
+            return switchedState;
+          });
+        }, 1500);
       }
       return ns;
     });
   }, [showNotify]);
 
-  // --- SOCKET Y RED (MEJORADO PARA CLOUD RUN) ---
+  // --- SOCKET Y RED (MEJORADO PARA CLOUD RUN Y CORS) ---
   const initSocket = useCallback((roomID: string, role: Player) => {
     const io = (window as any).io;
     if (!io) { showNotify("ERROR: SOCKET.IO NO CARGADO"); return; }
     if (socketRef.current) socketRef.current.disconnect();
 
-    // Julie: Forzamos polling inicial para evitar bloqueos de firewall
+    // Julie: Configuración crítica para Cloud Run + CORS
     const socket = io(SERVER_URL, {
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'],
+      withCredentials: true,
+      extraHeaders: {
+        'Access-Control-Allow-Origin': '*'
+      },
       reconnection: true,
-      reconnectionAttempts: 15,
-      timeout: 15000,
+      reconnectionAttempts: 30,
+      reconnectionDelay: 2000,
+      timeout: 45000,
       forceNew: true
     });
     
@@ -214,58 +238,50 @@ const App: React.FC = () => {
     socket.on('connect', () => {
       socket.emit('join-room', { roomID, role });
       showNotify(`CONECTADO: SALA ${roomID}`);
-      // Si somos invitados, pedimos sincronización inmediata
+      // Si somos el invitado (red), pedimos sync inmediato
       if (role === 'red') {
         socket.emit('request-sync', { roomID });
       }
     });
 
-    socket.on('opponent-joined', () => {
+    // Handshake Sincronizado: Alguien se unió
+    socket.on('player-joined', (data: any) => {
       setState(s => {
-        // El Host transmite su tablero actual al nuevo rival
-        if (role === 'white' && socketRef.current) {
-          socketRef.current.emit('sync-state', { 
+        // El Host transmite su estado actual al nuevo oponente
+        if (role === 'white' && socketRef.current?.connected) {
+          socketRef.current.emit('update-game', { 
             roomID, 
-            points: s.points, 
-            bar: s.bar, 
-            off: s.off,
-            turn: s.turn,
-            dice: s.dice,
-            movesLeft: s.movesLeft
+            gameState: { 
+              points: s.points, 
+              bar: s.bar, 
+              off: s.off, 
+              turn: s.turn, 
+              dice: s.dice, 
+              movesLeft: s.movesLeft,
+              opponentConnected: true,
+              status: 'PLAYING'
+            } 
           });
         }
         return { ...s, opponentConnected: true, status: 'PLAYING' };
       });
-      showNotify("¡RIVAL CONECTADO!");
+      showNotify("¡OPONENTE CONECTADO!");
     });
 
-    socket.on('sync-state', (data: any) => {
-      if (role === 'red') {
-        setState(s => ({ 
-          ...s, 
-          points: data.points, 
-          bar: data.bar, 
-          off: data.off,
-          turn: data.turn,
-          dice: data.dice,
-          movesLeft: data.movesLeft,
-          opponentConnected: true,
-          status: 'PLAYING'
-        }));
+    // Estado Maestro: Recibiendo actualización total
+    socket.on('update-game', (data: any) => {
+      if (data && data.gameState) {
+        setState(s => ({ ...s, ...data.gameState }));
+        if (data.gameState.dice) playClack();
       }
     });
 
     socket.on('request-sync', () => {
       if (role === 'white') {
         setState(s => {
-          socket.emit('sync-state', { 
+          socket.emit('update-game', { 
             roomID, 
-            points: s.points, 
-            bar: s.bar, 
-            off: s.off,
-            turn: s.turn,
-            dice: s.dice,
-            movesLeft: s.movesLeft
+            gameState: { points: s.points, bar: s.bar, off: s.off, turn: s.turn, dice: s.dice, movesLeft: s.movesLeft, opponentConnected: true } 
           });
           return s;
         });
@@ -274,33 +290,21 @@ const App: React.FC = () => {
 
     socket.on('opponent-disconnected', () => {
       setState(s => ({ ...s, opponentConnected: false }));
-      showNotify("RIVAL DESCONECTADO");
+      showNotify("OPONENTE DESCONECTADO");
     });
 
-    socket.on('remote-move', (data: any) => {
-      if (data && typeof data.from !== 'undefined') {
-         executeMove(data.from, data.to, data.die, true);
-      }
-    });
-    
-    socket.on('remote-dice', (data: any) => {
-      if (data && data.dice) {
-        setState(s => ({ ...s, dice: data.dice, movesLeft: data.moves, status: 'PLAYING', history: [] }));
-        playClack();
-      }
+    socket.on('connect_error', (err: any) => {
+      console.warn("Re-intentando conexión multijugador...");
     });
 
-    socket.on('connect_error', () => {
-      console.warn("Retrying connection...");
-    });
-
+    // Inicializar estado local y saltar a Playing
     setState(s => ({ 
       ...s, 
       roomID, 
       userColor: role, 
       gameMode: 'ONLINE', 
       hasAccepted: true, 
-      status: 'WAITING',
+      status: role === 'red' ? 'PLAYING' : 'WAITING',
       history: []
     }));
     setView('PLAYING');
@@ -410,13 +414,12 @@ const App: React.FC = () => {
 
   const executeMove = (from: number, to: number | 'off', die: number, isRemote = false) => {
     playClack();
-    if (!isRemote && state.gameMode === 'ONLINE' && socketRef.current?.connected) {
-      socketRef.current.emit('move', { from, to, die, roomID: state.roomID });
-    }
+    
     setState(curr => {
       const snapshot = JSON.parse(JSON.stringify({ points: curr.points, bar: curr.bar, off: curr.off, movesLeft: curr.movesLeft, turn: curr.turn, dice: curr.dice }));
       const ns = JSON.parse(JSON.stringify(curr)) as GameState;
       if (!isRemote) ns.history.push(snapshot);
+      
       const p = ns.turn;
       if (from === -1) ns.bar[p]--; else ns.points[from].checkers.pop();
       if (to === 'off') ns.off[p]++;
@@ -427,12 +430,31 @@ const App: React.FC = () => {
       }
       const dieIdx = ns.movesLeft.indexOf(die);
       if (dieIdx > -1) ns.movesLeft.splice(dieIdx, 1);
+      
       if (ns.movesLeft.length === 0 || !hasAnyLegalMoves(ns)) {
         ns.turn = ns.turn === 'white' ? 'red' : 'white';
         ns.dice = []; ns.movesLeft = []; ns.history = [];
       }
+      
       if (ns.off.white === 15) ns.winner = 'white';
       if (ns.off.red === 15) ns.winner = 'red';
+
+      // ONLINE: Sincronización de estado completa mediante update-game
+      if (!isRemote && ns.gameMode === 'ONLINE' && socketRef.current?.connected) {
+        socketRef.current.emit('update-game', {
+          roomID: ns.roomID,
+          gameState: { 
+            points: ns.points, 
+            bar: ns.bar, 
+            off: ns.off, 
+            turn: ns.turn, 
+            dice: ns.dice, 
+            movesLeft: ns.movesLeft,
+            winner: ns.winner 
+          }
+        });
+      }
+
       return ns;
     });
   };
@@ -447,7 +469,7 @@ const App: React.FC = () => {
     playClack();
   }, [state.history, state.gameMode]);
 
-  // --- LÓGICA IA (FIXED) ---
+  // --- LÓGICA IA ---
   useEffect(() => {
     if (view !== 'PLAYING' || state.gameMode !== 'AI' || state.turn === state.userColor || state.winner) return;
     const aiTimer = setTimeout(() => {
@@ -688,9 +710,12 @@ const App: React.FC = () => {
                       {state.opponentConnected ? 'CONECTADO' : 'ESPERANDO...'}
                     </span>
                   </div>
-                  <button onClick={copyInvite} className="bg-stone-800 p-2 rounded-lg border border-white/5 hover:bg-stone-700 active:scale-95 transition-all">
-                    <svg className="w-4 h-4 text-yellow-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 00-2 2v14a2 2 0 002 2h11a2 2 0 002-2V7a2 2 0 00-2-2m-3-4H4a2 2 0 00-2 2v14h2V3h12V1z"/></svg>
-                  </button>
+                  {/* Solo el Host muestra el botón de copiar link */}
+                  {state.userColor === 'white' && (
+                    <button onClick={copyInvite} className="bg-stone-800 p-2 rounded-lg border border-white/5 hover:bg-stone-700 active:scale-95 transition-all">
+                      <svg className="w-4 h-4 text-yellow-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 00-2 2v14a2 2 0 002 2h11a2 2 0 002-2V7a2 2 0 00-2-2m-3-4H4a2 2 0 00-2 2v14h2V3h12V1z"/></svg>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -730,7 +755,7 @@ const App: React.FC = () => {
                   <button onClick={() => setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, history: [], dice: [], movesLeft: []}))} className="w-full bg-red-950/20 border border-red-500/20 py-4 rounded-xl text-red-500 font-black text-[10px] uppercase tracking-widest hover:bg-red-950/40 transition-colors">Reiniciar Tablero</button>
                 </div>
              </div>
-             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v3.1 Production Edition</div>
+             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v3.2 Production Edition</div>
           </aside>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden" style={{ touchAction: 'none' }}>
