@@ -11,7 +11,7 @@ window.addEventListener('error', (e) => {
 });
 
 // --- AUDIO ENGINE ---
-const playSound = (type: 'dice' | 'checker') => {
+const playSound = (type: 'dice' | 'checker' | 'win') => {
   const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
   if (!AudioContext) return;
   try {
@@ -26,7 +26,7 @@ const playSound = (type: 'dice' | 'checker') => {
       gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
       source.connect(gain); gain.connect(ctx.destination);
       source.start();
-    } else {
+    } else if (type === 'checker') {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.frequency.setValueAtTime(150, ctx.currentTime);
@@ -34,6 +34,16 @@ const playSound = (type: 'dice' | 'checker') => {
       gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
       osc.connect(gain); gain.connect(ctx.destination);
       osc.start(); osc.stop(ctx.currentTime + 0.1);
+    } else if (type === 'win') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(440, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.5);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.5);
     }
   } catch(e) {}
 };
@@ -73,7 +83,7 @@ const CANVAS_HEIGHT = 700;
 const BOARD_PADDING = 40;
 const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 26;
-const PINCH_THRESHOLD = 0.055; // Julie: Más permisivo
+const PINCH_THRESHOLD = 0.055;
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
 const initialPoints = (): Point[] => {
@@ -131,6 +141,27 @@ const hasAnyLegalMove = (state: GameState): boolean => {
     }
   }
   return false;
+};
+
+// --- COMPONENTES AUXILIARES ---
+const ConfettiRain: React.FC = () => {
+  return (
+    <div className="absolute inset-0 pointer-events-none overflow-hidden z-[140]">
+      {Array.from({ length: 50 }).map((_, i) => (
+        <div 
+          key={i} 
+          className="confetti" 
+          style={{ 
+            left: `${Math.random() * 100}%`, 
+            animationDelay: `${Math.random() * 4}s`,
+            backgroundColor: i % 2 === 0 ? '#fbbf24' : '#ffffff',
+            width: `${Math.random() * 10 + 5}px`,
+            height: `${Math.random() * 10 + 5}px`
+          }} 
+        />
+      ))}
+    </div>
+  );
 };
 
 const App: React.FC = () => {
@@ -197,7 +228,7 @@ const App: React.FC = () => {
       const d2 = Math.floor(Math.random() * 6) + 1;
       const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
       const nextS = { ...s, dice: [d1, d2], movesLeft: moves };
-      return { ...nextS, isBlocked: !hasAnyLegalMove(nextS as any) };
+      return { ...nextS, isBlocked: !hasAnyLegalMove(nextS as any) && !s.winner };
     });
   }, []);
 
@@ -231,9 +262,19 @@ const App: React.FC = () => {
         else target.checkers.push(p);
       }
       ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
-      if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
-      else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); }
-      if (ns.off.white === 15) ns.winner = 'white'; if (ns.off.red === 15) ns.winner = 'red';
+      
+      // Victoria check
+      if (ns.off.white === 15) { ns.winner = 'white'; playSound('win'); }
+      else if (ns.off.red === 15) { ns.winner = 'red'; playSound('win'); }
+
+      if (ns.winner) {
+        ns.isBlocked = false;
+        ns.movesLeft = [];
+      } else {
+        if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
+        else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); }
+      }
+      
       return ns;
     });
   };
@@ -261,7 +302,6 @@ const App: React.FC = () => {
     return null;
   }, [getPos]);
 
-  // -- INTERACTION ENGINE (JULIE FIX) --
   const handlePointerDown = (clientX: number, clientY: number) => {
     if (isMenuOpen || stateRef.current.winner || stateRef.current.isBlocked) return;
     const s = stateRef.current;
@@ -315,11 +355,9 @@ const App: React.FC = () => {
       const s = stateRef.current;
       const rev = s.userColor === 'red';
       
-      // AR HAND LOGIC
       if (rawHand.current.isDetected) {
         smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.35;
         smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.35;
-        
         pinchBuffer.current.push(rawHand.current.isPinching);
         if (pinchBuffer.current.length > 8) pinchBuffer.current.shift();
         const isPinchSteady = pinchBuffer.current.filter(b => b).length >= 5;
@@ -409,8 +447,6 @@ const App: React.FC = () => {
         const p = current.turn;
         const diceUniq = Array.from(new Set(current.movesLeft)).sort((a,b) => b-a);
         let moveFound = false;
-        
-        // Safety check to prevent infinite AI loops
         if (Date.now() - startTime > 3000) { passTurn(); setIsAiProcessing(false); return; }
 
         for (const d of diceUniq) {
@@ -429,10 +465,7 @@ const App: React.FC = () => {
           }
           if (moveFound) break;
         }
-        if (!moveFound) { 
-          if (current.movesLeft.length > 0) setState(prev => ({ ...prev, movesLeft: prev.movesLeft.slice(1) })); 
-          else passTurn(); 
-        }
+        if (!moveFound) { if (current.movesLeft.length > 0) setState(prev => ({ ...prev, movesLeft: prev.movesLeft.slice(1) })); else passTurn(); }
         setIsAiProcessing(false);
       };
       runAILogic();
@@ -455,12 +488,13 @@ const App: React.FC = () => {
          onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
          onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
       
-      {state.isBlocked && (
-        <div className="fixed inset-0 z-[900] flex items-center justify-center bg-black/80 backdrop-blur-xl">
-           <div className="bg-stone-900 border-2 border-yellow-600 p-12 rounded-[3rem] text-center max-w-md shadow-4xl animate-in fade-in zoom-in duration-300">
-              <h3 className="text-yellow-600 font-black text-4xl mb-4 uppercase italic">SIN SALIDA</h3>
-              <p className="text-white/60 mb-10 text-sm font-bold">No hay jugadas posibles para estos dados.</p>
-              <button onClick={passTurn} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl text-xl uppercase shadow-xl">Siguiente Turno</button>
+      {/* Julie: Refactorizado SIN SALIDA - Transparente para ver el tablero */}
+      {state.isBlocked && !state.winner && (
+        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[900] flex items-center justify-center pointer-events-none">
+           <div className="bg-stone-900/40 border border-yellow-600/30 p-8 rounded-[2rem] text-center max-w-xs shadow-2xl backdrop-blur-sm animate-in fade-in zoom-in duration-300 pointer-events-auto">
+              <h3 className="text-yellow-600 font-black text-2xl mb-2 uppercase italic">SIN SALIDA</h3>
+              <p className="text-white/80 mb-6 text-[10px] font-bold">No hay jugadas posibles para estos dados.</p>
+              <button onClick={passTurn} className="w-full bg-yellow-600 text-black font-black py-3 rounded-xl text-xs uppercase shadow-xl hover:scale-105 transition-transform">Siguiente Turno</button>
            </div>
         </div>
       )}
@@ -512,10 +546,21 @@ const App: React.FC = () => {
             {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse">Iniciando Realidad Aumentada...</div>}
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted />
             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
+            
+            {/* Julie: Pantalla de Victoria con Confetti */}
             {state.winner && (
-              <div className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-500">
-                <h2 className="text-8xl font-black italic text-yellow-600 uppercase mb-8 tracking-tighter shadow-yellow-600/20">{state.winner === state.userColor ? 'VICTORIA' : 'DERROTA'}</h2>
-                <button onClick={() => { resetGame(); setView('HOME'); }} className="bg-white text-black font-black px-12 py-5 rounded-full uppercase text-lg shadow-3xl hover:bg-yellow-600 hover:text-white transition-all">Menu Principal</button>
+              <div className="absolute inset-0 z-[200] bg-black/90 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-700">
+                <ConfettiRain />
+                <div className="text-center z-[210]">
+                  <h2 className="text-2xl font-black text-yellow-600/60 uppercase tracking-widest mb-2 italic">¡Tenemos un ganador!</h2>
+                  <h1 className="text-8xl font-black italic text-white uppercase mb-12 tracking-tighter drop-shadow-glow">
+                    {state.winner === 'white' ? 'BLANCAS' : 'ROJAS'}
+                  </h1>
+                  <div className="flex flex-col gap-4 w-72 mx-auto">
+                    <button onClick={() => resetGame(state.gameMode)} className="bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase text-lg shadow-3xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button>
+                    <button onClick={() => { resetGame(); setView('HOME'); }} className="bg-white/10 text-white font-black py-4 rounded-2xl uppercase text-xs tracking-widest hover:bg-white/20 transition-all border border-white/10">Menu Inicio</button>
+                  </div>
+                </div>
               </div>
             )}
           </main>
