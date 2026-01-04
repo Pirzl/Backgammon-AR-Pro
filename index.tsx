@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
-// --- POLYFILLS & PROTOCOLS ---
+// --- POLYFILLS ---
 if (typeof (CanvasRenderingContext2D as any).prototype.roundRect !== 'function') {
   (CanvasRenderingContext2D as any).prototype.roundRect = function (x: number, y: number, w: number, h: number, r: number) {
     if (typeof r === 'undefined') r = 0;
@@ -59,24 +59,10 @@ const CANVAS_HEIGHT = 700;
 const BOARD_PADDING = 40;
 const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 26;
-const PINCH_THRESHOLD = 0.045; // Sensibilidad de pinza ajustada
+const PINCH_THRESHOLD = 0.045;
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
-// --- UTILS ---
-const playClack = () => {
-  try {
-    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(150, audioCtx.currentTime);
-    gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
-    osc.connect(gain); gain.connect(audioCtx.destination);
-    osc.start(); osc.stop(audioCtx.currentTime + 0.1);
-  } catch (e) {}
-};
-
+// --- LOGIC UTILS ---
 const initialPoints = (): Point[] => {
   const p = Array(24).fill(null).map(() => ({ checkers: [] as Player[] }));
   const add = (idx: number, n: number, col: Player) => {
@@ -87,15 +73,6 @@ const initialPoints = (): Point[] => {
   return p;
 };
 
-const isHome = (player: Player, points: Point[], barCount: number) => {
-  if (barCount > 0) return false;
-  const range = player === 'red' ? [18, 23] : [0, 5];
-  for (let i = 0; i < 24; i++) {
-    if ((i < range[0] || i > range[1]) && points[i].checkers.includes(player)) return false;
-  }
-  return true;
-};
-
 const getTargetPoint = (player: Player, from: number, die: number) => {
   if (from === -1) return player === 'red' ? die - 1 : 24 - die;
   return player === 'red' ? from + die : from - die;
@@ -104,9 +81,16 @@ const getTargetPoint = (player: Player, from: number, die: number) => {
 const isValidMove = (state: GameState, player: Player, from: number, to: number | 'off', dieValue: number): boolean => {
   if (!state.movesLeft.includes(dieValue)) return false;
   if (state.bar[player] > 0 && from !== -1) return false;
+  
   const target = getTargetPoint(player, from, dieValue);
   if (to === 'off') {
-    if (!isHome(player, state.points, state.bar[player])) return false;
+    // Regla de salida: todas las fichas deben estar en casa
+    const range = player === 'red' ? [18, 23] : [0, 5];
+    const barCount = state.bar[player];
+    if (barCount > 0) return false;
+    for (let i = 0; i < 24; i++) {
+      if ((i < range[0] || i > range[1]) && state.points[i].checkers.includes(player)) return false;
+    }
     const isExact = player === 'red' ? (from + dieValue === 24) : (from - dieValue === -1);
     if (isExact) return true;
     if (player === 'red' && from + dieValue > 23) {
@@ -141,61 +125,7 @@ const hasAnyLegalMove = (state: GameState): boolean => {
   return false;
 };
 
-// --- HAND TRACKING & COORDINATE MAPPING ---
-const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isActive: boolean) => {
-  const [isARLoading, setIsARLoading] = useState(true);
-  const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
-  const handsRef = useRef<any>(null);
-  const cameraRef = useRef<any>(null);
-
-  useEffect(() => {
-    if (!isActive) return;
-    let mounted = true;
-    const initTracking = async () => {
-      const HandsClass = (window as any).Hands;
-      const CameraClass = (window as any).Camera;
-      if (!HandsClass || !CameraClass || !videoRef.current) {
-        if (mounted) setTimeout(initTracking, 500);
-        return;
-      }
-      try {
-        const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
-        hands.onResults((results: any) => {
-          if (!mounted) return;
-          if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            const landmarks = results.multiHandLandmarks[0];
-            const indexTip = landmarks[8];
-            const thumbTip = landmarks[4];
-            if (indexTip && thumbTip) {
-              const distance = Math.sqrt(Math.pow(indexTip.x - thumbTip.x, 2) + Math.pow(indexTip.y - thumbTip.y, 2));
-              // Julie's Fix: Mapeo directo de normalizado (0-1) a coordenadas de canvas con espejo
-              rawHand.current = { 
-                x: (1 - indexTip.x) * CANVAS_WIDTH, 
-                y: indexTip.y * CANVAS_HEIGHT, 
-                isPinching: distance < PINCH_THRESHOLD, 
-                isDetected: true 
-              };
-            }
-          } else { rawHand.current.isDetected = false; }
-        });
-        handsRef.current = hands;
-        cameraRef.current = new CameraClass(videoRef.current, {
-          onFrame: async () => { if (mounted && videoRef.current && handsRef.current) await handsRef.current.send({ image: videoRef.current }); },
-          width: 1280, height: 720,
-        });
-        await cameraRef.current.start();
-        if (mounted) setIsARLoading(false);
-      } catch (err) { if (mounted) setTimeout(initTracking, 2000); }
-    };
-    initTracking();
-    return () => { mounted = false; cameraRef.current?.stop(); if (handsRef.current) handsRef.current.close(); };
-  }, [isActive, videoRef]);
-
-  return { rawHand, isARLoading };
-};
-
-// --- APP COMPONENT ---
+// --- APP ---
 const App: React.FC = () => {
   const [view, setView] = useState<View>('HOME');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -212,8 +142,6 @@ const App: React.FC = () => {
   const lastIsPinching = useRef(false);
   const grabbedRef = useRef<GrabbedInfo | null>(null);
 
-  const { rawHand, isARLoading } = useHandTracking(videoRef, view === 'PLAYING');
-
   const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
     turn: 'white', dice: [], movesLeft: [], grabbed: null,
@@ -225,49 +153,79 @@ const App: React.FC = () => {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  // Manejo de URL para invitaciones
+  // AR Hand Tracking Setup
+  const [isARLoading, setIsARLoading] = useState(true);
+  const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
+
+  useEffect(() => {
+    if (view !== 'PLAYING') return;
+    let mounted = true;
+    const HandsClass = (window as any).Hands;
+    const CameraClass = (window as any).Camera;
+    if (!HandsClass || !CameraClass || !videoRef.current) return;
+
+    const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+    hands.onResults((results: any) => {
+      if (!mounted || !results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
+      const landmarks = results.multiHandLandmarks[0];
+      const indexTip = landmarks[8];
+      const thumbTip = landmarks[4];
+      const distance = Math.sqrt(Math.pow(indexTip.x - thumbTip.x, 2) + Math.pow(indexTip.y - thumbTip.y, 2));
+      // Julie Fix: Mapeo 1:1 ya que vídeo y canvas ahora usan 'contain'
+      rawHand.current = { 
+        x: (1 - indexTip.x) * CANVAS_WIDTH, 
+        y: indexTip.y * CANVAS_HEIGHT, 
+        isPinching: distance < PINCH_THRESHOLD, 
+        isDetected: true 
+      };
+    });
+
+    const camera = new CameraClass(videoRef.current, {
+      onFrame: async () => { if (mounted && hands) await hands.send({ image: videoRef.current! }); },
+      width: 1280, height: 720,
+    });
+    camera.start().then(() => { if (mounted) setIsARLoading(false); });
+
+    return () => { mounted = false; camera.stop(); hands.close(); };
+  }, [view]);
+
+  // Invitaciones URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
     if (room) setInvitationId(room);
   }, []);
 
-  const triggerErrorMsg = useCallback((msg: string) => {
-    setIllegalMoveMsg(msg);
-    setTimeout(() => setIllegalMoveMsg(null), 2000);
-  }, []);
-
   const initSocket = useCallback((roomID: string, role: Player) => {
     const io = (window as any).io;
     if (!io) return;
-    if (socketRef.current) socketRef.current.disconnect();
     const socket = io(window.location.origin, { transports: ['polling', 'websocket'], path: '/socket.io/' });
     socketRef.current = socket;
-    socket.on('connect', () => socket.emit('join-room', { roomID, role }));
+    
+    socket.on('connect', () => {
+      socket.emit('join-room', { roomID, role });
+      // Julie Fix: Si soy invitado, pido el estado inicial
+      if (role === 'red') socket.emit('request-sync', { roomID });
+    });
+
+    socket.on('user-joined', () => {
+      // Julie Fix: Si soy el host y alguien entra, mando mi estado actual
+      if (stateRef.current.userColor === 'white') {
+        socket.emit('update-game', { roomID: stateRef.current.roomID, gameState: stateRef.current });
+      }
+      setState(s => ({ ...s, opponentConnected: true }));
+    });
+
     socket.on('update-game', (data: any) => {
       if (data?.gameState) {
         setState(s => ({ ...s, ...data.gameState, opponentConnected: true }));
       }
     });
+
     setState(s => ({ ...s, roomID, userColor: role, gameMode: 'ONLINE' }));
     setView('PLAYING');
-    // Limpiar URL
     window.history.replaceState({}, '', window.location.pathname);
-  }, []);
-
-  const copyInviteLink = () => {
-    const link = `${window.location.origin}${window.location.pathname}?room=${state.roomID}`;
-    navigator.clipboard.writeText(link).then(() => alert("Link de invitación copiado!"));
-  };
-
-  const undoMove = useCallback(() => {
-    setState(curr => {
-      if (curr.history.length === 0 || curr.turn !== curr.userColor) return curr;
-      const lastSnap = curr.history[curr.history.length - 1];
-      const ns = { ...curr, ...lastSnap, history: curr.history.slice(0, -1), isBlocked: false };
-      if (ns.gameMode === 'ONLINE' && socketRef.current?.connected) socketRef.current.emit('update-game', { roomID: ns.roomID, gameState: ns });
-      return ns;
-    });
   }, []);
 
   const rollDice = useCallback((forced: boolean = false) => {
@@ -276,9 +234,14 @@ const App: React.FC = () => {
       const d1 = Math.floor(Math.random() * 6) + 1;
       const d2 = Math.floor(Math.random() * 6) + 1;
       const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
-      playClack();
-      const nextState = { ...s, dice: [d1, d2], movesLeft: moves, history: [], isBlocked: !hasAnyLegalMove({ ...s, turn: s.turn, dice: [d1,d2], movesLeft: moves } as GameState) };
-      if (nextState.gameMode === 'ONLINE' && socketRef.current?.connected) socketRef.current.emit('update-game', { roomID: nextState.roomID, gameState: nextState });
+      
+      const tempState = { ...s, dice: [d1, d2], movesLeft: moves };
+      const blocked = !hasAnyLegalMove(tempState as GameState);
+      
+      const nextState = { ...tempState, history: [], isBlocked: blocked };
+      if (nextState.gameMode === 'ONLINE' && socketRef.current?.connected) {
+        socketRef.current.emit('update-game', { roomID: nextState.roomID, gameState: nextState });
+      }
       return nextState;
     });
   }, []);
@@ -293,11 +256,11 @@ const App: React.FC = () => {
 
   const executeMove = (from: number, to: number | 'off', die: number) => {
     setState(curr => {
-      if (!isValidMove(curr, curr.turn, from, to, die)) { triggerErrorMsg("MOVIMIENTO NO VÁLIDO"); return curr; }
-      playClack();
+      if (!isValidMove(curr, curr.turn, from, to, die)) return curr;
       const ns = JSON.parse(JSON.stringify(curr)) as GameState;
-      ns.history = [...(curr.history || []), { points: JSON.parse(JSON.stringify(curr.points)), bar: { ...curr.bar }, off: { ...curr.off }, movesLeft: [...curr.movesLeft] }];
+      ns.history = [...curr.history, { points: JSON.parse(JSON.stringify(curr.points)), bar: { ...curr.bar }, off: { ...curr.off }, movesLeft: [...curr.movesLeft] }];
       const p = ns.turn;
+      
       if (from === -1) ns.bar[p]--; else ns.points[from].checkers.pop();
       if (to === 'off') ns.off[p]++;
       else {
@@ -305,8 +268,7 @@ const App: React.FC = () => {
         if (target.checkers.length === 1 && target.checkers[0] !== p) { ns.bar[target.checkers[0]]++; target.checkers = [p]; }
         else target.checkers.push(p);
       }
-      const dieIdx = ns.movesLeft.indexOf(die);
-      if (dieIdx > -1) ns.movesLeft.splice(dieIdx, 1);
+      ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
       
       if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
       else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.history = []; ns.isBlocked = false; }
@@ -356,8 +318,8 @@ const App: React.FC = () => {
       
       const targetX = (rawHand.current.isDetected && !mouseState.current.isDown) ? rawHand.current.x : mouseState.current.x;
       const targetY = (rawHand.current.isDetected && !mouseState.current.isDown) ? rawHand.current.y : mouseState.current.y;
-      smoothHand.current.x += (targetX - smoothHand.current.x) * 0.3; // Más responsivo
-      smoothHand.current.y += (targetY - smoothHand.current.y) * 0.3;
+      smoothHand.current.x += (targetX - smoothHand.current.x) * 0.35;
+      smoothHand.current.y += (targetY - smoothHand.current.y) * 0.35;
       const { x, y } = smoothHand.current;
       const isPinch = (rawHand.current.isDetected && rawHand.current.isPinching) || mouseState.current.isDown;
       
@@ -374,7 +336,6 @@ const App: React.FC = () => {
             if (to !== null) {
               const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d));
               if (possibleDice.length > 0) executeMove(grabbedRef.current.fromIndex, to as any, possibleDice[0]);
-              else triggerErrorMsg("MOVIMIENTO NO VÁLIDO");
             }
           }
         }
@@ -384,7 +345,7 @@ const App: React.FC = () => {
 
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
       const bW = 900; const xB = (CANVAS_WIDTH - bW) / 2 + 50;
-      ctx.save(); ctx.shadowBlur = 40; ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.globalAlpha = s.boardOpacity;
+      ctx.save(); ctx.globalAlpha = s.boardOpacity;
       ctx.fillStyle = '#1c1917'; ctx.fillRect(xB, BOARD_PADDING, bW, CANVAS_HEIGHT - BOARD_PADDING * 2); ctx.restore();
 
       for (let i = 0; i < 24; i++) {
@@ -410,8 +371,6 @@ const App: React.FC = () => {
       });
 
       ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(40, BOARD_PADDING, 80, CANVAS_HEIGHT - BOARD_PADDING*2);
-      const offTarget = grabbedRef.current && s.movesLeft.some(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, 'off', d));
-      if (offTarget) { ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 4; ctx.strokeRect(40, BOARD_PADDING, 80, CANVAS_HEIGHT-BOARD_PADDING*2); }
       for(let i=0; i<s.off.white; i++) drawChecker(ctx, 80, CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15, 'white');
       for(let i=0; i<s.off.red; i++) drawChecker(ctx, 80, BOARD_PADDING + 40 + i*15, 'red');
 
@@ -421,7 +380,6 @@ const App: React.FC = () => {
       if (rawHand.current.isDetected || mouseState.current.isDown) { 
         ctx.beginPath(); ctx.arc(x, y, isPinch ? 12 : 24, 0, Math.PI * 2); 
         ctx.strokeStyle = isPinch ? COLORS.gold : 'white'; ctx.lineWidth = 3; ctx.stroke(); 
-        if (!isPinch) { ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fill(); }
       }
       animId = requestAnimationFrame(draw);
     };
@@ -432,7 +390,6 @@ const App: React.FC = () => {
   const drawChecker = (ctx: CanvasRenderingContext2D, x: number, y: number, p: Player, glow = false) => {
     ctx.save();
     if (glow) { ctx.shadowBlur = 30; ctx.shadowColor = COLORS.gold; }
-    else { ctx.shadowBlur = 10; ctx.shadowColor = 'rgba(0,0,0,0.5)'; }
     const grad = ctx.createRadialGradient(x - 8, y - 8, 2, x, y, CHECKER_RADIUS);
     if (p === 'white') { grad.addColorStop(0, '#ffffff'); grad.addColorStop(1, '#cccccc'); }
     else { grad.addColorStop(0, '#ff5555'); grad.addColorStop(1, '#aa0000'); }
@@ -441,8 +398,7 @@ const App: React.FC = () => {
   };
 
   const drawDie = (ctx: CanvasRenderingContext2D, x: number, y: number, v: number, player: Player) => {
-    ctx.save(); ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(0,0,0,0.6)';
-    ctx.fillStyle = player === 'white' ? '#fff' : '#ff4444';
+    ctx.save(); ctx.fillStyle = player === 'white' ? '#fff' : '#ff4444';
     ctx.beginPath(); (ctx as any).roundRect(x-40, y-40, 80, 80, 15); ctx.fill();
     ctx.fillStyle = player === 'white' ? '#000' : '#fff';
     const dots: any = { 1: [[0,0]], 2: [[-22,-22], [22,22]], 3: [[-22,-22], [0,0], [22,22]], 4: [[-22,-22], [22,-22], [-22,22], [22,22]], 5: [[-22,-22], [22,-22], [0,0], [-22,22], [22,22]], 6: [[-22,-22], [22,-22], [-22,0], [22,0], [-22,22], [22,22]] };
@@ -455,114 +411,123 @@ const App: React.FC = () => {
     const rect = el.getBoundingClientRect();
     const cx = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
     const cy = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
-    const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
-    const rectAspect = rect.width / rect.height;
-    let scale, ox, oy;
-    if (rectAspect > canvasAspect) { scale = rect.height / CANVAS_HEIGHT; ox = (rect.width - CANVAS_WIDTH * scale) / 2; oy = 0; }
-    else { scale = rect.width / CANVAS_WIDTH; ox = 0; oy = (rect.height - CANVAS_HEIGHT * scale) / 2; }
-    mouseState.current.x = (cx - ox) / scale; mouseState.current.y = (cy - oy) / scale;
+    const scale = rect.width / CANVAS_WIDTH;
+    mouseState.current.x = cx / scale; mouseState.current.y = cy / scale;
   };
 
+  // IA Logic
+  useEffect(() => {
+    if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING') {
+      const timer = setTimeout(() => {
+        if (state.dice.length === 0) rollDice(forced => true);
+        else if (state.isBlocked) passTurn();
+        else {
+          const p = state.turn;
+          const die = state.movesLeft[0];
+          let moved = false;
+          if (state.bar[p] > 0) {
+            const target = getTargetPoint(p, -1, die);
+            if (isValidMove(state, p, -1, target, die)) { executeMove(-1, target, die); moved = true; }
+          } else {
+            const order = p === 'red' ? Array.from({length:24},(_,i)=>i) : Array.from({length:24},(_,i)=>23-i);
+            for (let idx of order) {
+              if (state.points[idx].checkers.includes(p)) {
+                const target = getTargetPoint(p, idx, die);
+                if (target < 0 || target > 23) { if (isValidMove(state, p, idx, 'off', die)) { executeMove(idx, 'off', die); moved = true; break; } } 
+                else if (isValidMove(state, p, idx, target, die)) { executeMove(idx, target, die); moved = true; break; }
+              }
+            }
+          }
+          if (!moved) {
+            if (state.movesLeft.length > 1) setState(s => ({...s, movesLeft: s.movesLeft.slice(1)}));
+            else passTurn();
+          }
+        }
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [state.turn, state.dice, state.movesLeft, state.gameMode, state.isBlocked, view]);
+
   return (
-    <div className="w-full h-full bg-black relative overflow-hidden select-none flex flex-col" 
+    <div className="w-full h-full bg-black relative overflow-hidden flex flex-col" 
          onMouseMove={handlePointer} onTouchMove={handlePointer}
          onMouseDown={(e) => { mouseState.current.isDown = true; handlePointer(e); }} onMouseUp={() => { mouseState.current.isDown = false; }}
          onTouchStart={(e) => { mouseState.current.isDown = true; handlePointer(e); }} onTouchEnd={() => { mouseState.current.isDown = false; }}>
       
-      {illegalMoveMsg && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center pointer-events-none">
-          <div className="bg-red-600/90 text-white font-black px-12 py-8 rounded-3xl text-4xl shadow-2xl animate-in zoom-in duration-300">{illegalMoveMsg}</div>
-        </div>
-      )}
-
       {state.isBlocked && state.turn === state.userColor && (
-        <div className="fixed inset-0 z-[900] flex items-center justify-center bg-black/40 backdrop-blur-sm">
-           <div className="bg-stone-900 border-2 border-yellow-600 p-12 rounded-[3rem] shadow-4xl text-center max-w-md animate-in zoom-in duration-300">
-              <h3 className="text-yellow-600 font-black text-4xl uppercase mb-6 tracking-tighter italic">SIN MOVIMIENTOS</h3>
-              <p className="text-white/70 mb-10 text-lg">No hay jugadas posibles con los dados actuales.</p>
+        <div className="fixed inset-0 z-[900] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+           <div className="bg-stone-900 border-2 border-yellow-600 p-12 rounded-[3rem] text-center max-w-md animate-in zoom-in">
+              <h3 className="text-yellow-600 font-black text-4xl mb-6">SIN MOVIMIENTOS</h3>
               <button onClick={passTurn} className="bg-yellow-600 text-black font-black py-5 px-16 rounded-2xl text-xl uppercase">PASAR TURNO</button>
            </div>
         </div>
       )}
 
       {view === 'HOME' && (
-        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-10">
-          <h1 className="text-9xl font-black italic tracking-tighter mb-10 text-white">B-GAMMON</h1>
+        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center">
+          <h1 className="text-9xl font-black italic text-white mb-10">B-GAMMON</h1>
           {invitationId ? (
-            <div className="bg-stone-900 p-10 rounded-[3rem] text-center border border-white/10 shadow-4xl">
-               <h2 className="text-white font-black text-2xl uppercase mb-4 italic tracking-widest">Invitación recibida</h2>
-               <div className="text-yellow-600 text-5xl font-black mb-8">{invitationId}</div>
-               <button onClick={() => initSocket(invitationId, 'red')} className="bg-yellow-600 text-black font-black py-6 px-20 rounded-2xl text-xl uppercase">ACEPTAR Y JUGAR</button>
-               <button onClick={() => setInvitationId(null)} className="mt-6 block w-full text-white/20 text-[10px] font-black uppercase tracking-widest">Rechazar</button>
+            <div className="bg-stone-900 p-10 rounded-[3rem] text-center border border-white/10">
+               <h2 className="text-white font-black text-2xl mb-4">Invitación de {invitationId}</h2>
+               <button onClick={() => initSocket(invitationId, 'red')} className="bg-yellow-600 text-black font-black py-6 px-20 rounded-2xl text-xl">ACEPTAR Y JUGAR</button>
             </div>
           ) : (
             <div className="flex flex-col gap-4 w-64">
-              <button onClick={() => { setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, turn:'white', gameMode: 'AI', userColor: 'white', winner: null, history: [], isBlocked: false})); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl text-lg uppercase shadow-xl">Vs Máquina</button>
-              <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl text-lg uppercase shadow-xl">Online / Amigo</button>
+              <button onClick={() => { setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, turn:'white', gameMode: 'AI', userColor: 'white', winner: null, history: [], isBlocked: false})); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl uppercase">Vs Máquina</button>
+              <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl uppercase">Online / Amigo</button>
             </div>
           )}
         </div>
       )}
 
       {view === 'ONLINE_LOBBY' && (
-        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-10 space-y-6">
+        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center space-y-6">
           <button onClick={() => initSocket(Math.random().toString(36).substring(2, 8).toUpperCase(), 'white')} className="w-64 bg-yellow-600 text-black font-black py-4 rounded-xl uppercase">Crear Sala</button>
           <div className="flex gap-2">
-            <input type="text" placeholder="ID" value={joinIdInput} onChange={(e) => setJoinIdInput(e.target.value.toUpperCase())} className="bg-stone-900 border border-white/10 rounded-xl px-4 text-center font-black uppercase text-white" />
+            <input type="text" placeholder="ID" value={joinIdInput} onChange={(e) => setJoinIdInput(e.target.value.toUpperCase())} className="bg-stone-900 border border-white/10 rounded-xl px-4 text-center text-white" />
             <button onClick={() => initSocket(joinIdInput, 'red')} className="bg-white text-black font-black px-6 py-4 rounded-xl uppercase">Unirse</button>
           </div>
-          <button onClick={() => setView('HOME')} className="text-white/30 text-[10px] uppercase font-bold tracking-widest">Volver</button>
+          <button onClick={() => setView('HOME')} className="text-white/30 text-xs uppercase">Volver</button>
         </div>
       )}
 
       {view === 'PLAYING' && (
         <>
-          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-xl">
+          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50">
             <div className="flex items-center gap-6">
-              <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner">
+              <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1">
                 <div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div>
               </button>
               {state.gameMode === 'ONLINE' && (
                 <div className="flex gap-4 items-center">
                   <div className="flex flex-col">
-                    <span className="text-[10px] font-black tracking-widest text-white/40 uppercase">{state.roomID}</span>
-                    <span className={`text-[10px] font-bold uppercase ${state.opponentConnected ? 'text-green-500' : 'text-yellow-600 animate-pulse'}`}>{state.opponentConnected ? 'EN LÍNEA' : 'ESPERANDO...'}</span>
+                    <span className="text-[10px] text-white/40 uppercase">{state.roomID}</span>
+                    <span className={`text-[10px] font-bold uppercase ${state.opponentConnected ? 'text-green-500' : 'text-yellow-600 animate-pulse'}`}>{state.opponentConnected ? 'OPONENTE CONECTADO' : 'ESPERANDO...'}</span>
                   </div>
-                  {!state.opponentConnected && <button onClick={copyInviteLink} className="bg-stone-800 text-[9px] px-3 py-1 rounded text-white/50 border border-white/10">Copiar Link</button>}
+                  {!state.opponentConnected && <button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`); alert("Link copiado!"); }} className="bg-stone-800 text-[9px] px-3 py-1 rounded text-white/50 border border-white/10">Copiar Link</button>}
                 </div>
               )}
             </div>
             <div className="flex gap-4 items-center">
-              {state.history.length > 0 && state.turn === state.userColor && (
-                <button onClick={undoMove} className="bg-stone-800 text-white px-6 py-2.5 rounded-full font-black text-[11px] uppercase border border-white/10 shadow-lg">Undo</button>
-              )}
-              <div className={`px-8 py-2.5 rounded-full font-black text-[11px] tracking-widest uppercase border-2 shadow-lg ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
+              <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
                 {state.turn === state.userColor ? 'TU TURNO' : 'TURNO RIVAL'}
               </div>
-              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-xl transition-all">Tirar Dados</button>
+              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase transition-all">Tirar Dados</button>
             </div>
           </header>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
-            {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950/40 backdrop-blur-sm flex flex-col items-center justify-center"><div className="w-16 h-16 border-2 border-yellow-600 border-t-transparent rounded-full animate-spin mb-4"></div><p className="text-white/60 font-black tracking-[0.3em] uppercase text-[10px]">Iniciando AR...</p></div>}
-            <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-cover grayscale brightness-50" autoPlay playsInline muted />
-            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-10 pointer-events-none drop-shadow-2xl w-full h-full object-contain" />
-            {state.winner && (
-              <div className="absolute inset-0 z-[200] bg-stone-950/90 flex flex-col items-center justify-center backdrop-blur-xl animate-in fade-in duration-500">
-                <h2 className="text-9xl font-black text-yellow-600 italic mb-10 uppercase">{state.winner === state.userColor ? 'GANASTE' : 'PERDISTE'}</h2>
-                <button onClick={() => window.location.href = window.location.origin + window.location.pathname} className="bg-white text-black font-black px-16 py-6 rounded-full uppercase text-xl">Volver al Inicio</button>
-              </div>
-            )}
+            {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center"><div className="w-16 h-16 border-2 border-yellow-600 border-t-transparent rounded-full animate-spin mb-4"></div><p className="text-white/60 font-black uppercase text-[10px]">Iniciando AR...</p></div>}
+            <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale brightness-50" autoPlay playsInline muted />
+            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-10 pointer-events-none w-full h-full object-contain" />
           </main>
           
-          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[60] border-r border-stone-800 transition-transform duration-500 ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col backdrop-blur-3xl`}>
+          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[60] border-r border-stone-800 transition-transform duration-500 ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col`}>
              <div className="flex justify-between items-center mb-10">
                <h3 className="text-white font-black text-xl uppercase italic">OPCIONES</h3>
-               <button onClick={() => setIsMenuOpen(false)} className="text-yellow-600 text-2xl font-black p-2">✕</button>
+               <button onClick={() => setIsMenuOpen(false)} className="text-yellow-600 text-2xl font-black">✕</button>
              </div>
              <div className="space-y-8 flex-1">
-                <button onClick={() => setRulesVisible(!rulesVisible)} className="w-full bg-yellow-600 text-black py-4 rounded-xl font-black text-[11px] uppercase tracking-widest">Reglas del Juego</button>
-                {rulesVisible && <div className="bg-stone-900 p-6 rounded-2xl text-[12px] text-white/70 leading-relaxed border border-white/5 space-y-4 font-medium animate-in slide-in-from-top"><p>Mueve todas tus fichas al cuadrante final y sácalas para ganar. Si caes en una ficha rival sola, va a la barra.</p></div>}
                 <div className="pt-6 border-t border-white/5 space-y-3">
                   <label className="text-[10px] font-bold uppercase opacity-40">Opacidad Tablero</label>
                   <input type="range" min="0" max="1" step="0.01" value={state.boardOpacity} onChange={(e) => setState(s => ({...s, boardOpacity: parseFloat(e.target.value)}))} className="w-full accent-yellow-600" />
