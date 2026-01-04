@@ -1,5 +1,5 @@
 {
-  "name": "Copy of Backgammon AR Pro",
+  "name": "2-Backgammon AR Pro",
   "description": "Una experiencia de Backgammon en Realidad Aumentada con validación de reglas avanzada y detección de manos de alta precisión.",
   "requestFramePermissions": [
     "camera"
