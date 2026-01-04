@@ -43,7 +43,7 @@ export type Player = 'white' | 'red';
 export type View = 'HOME' | 'ONLINE_LOBBY' | 'PLAYING';
 export type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
 export interface Point { checkers: Player[]; }
-export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; }
+export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; }
 export interface GameStateSnapshot {
   points: Point[];
   bar: { white: number, red: number };
@@ -73,7 +73,7 @@ const CANVAS_HEIGHT = 700;
 const BOARD_PADDING = 40;
 const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 26;
-const PINCH_THRESHOLD = 0.045;
+const PINCH_THRESHOLD = 0.055; // Julie: Más permisivo
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
 const initialPoints = (): Point[] => {
@@ -141,7 +141,7 @@ const App: React.FC = () => {
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const mouseState = useRef({ x: 0, y: 0, isDown: false });
+  const mousePos = useRef({ x: 0, y: 0 });
   const smoothHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
   const pinchBuffer = useRef<boolean[]>([]);
   const grabbedRef = useRef<GrabbedInfo | null>(null);
@@ -162,6 +162,7 @@ const App: React.FC = () => {
   const resetGame = useCallback((mode: GameMode = 'LOCAL') => {
     setHistory([]);
     setIsAiProcessing(false);
+    grabbedRef.current = null;
     setState(s => ({
       ...s, points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
       turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, gameMode: mode, isBlocked: false
@@ -260,6 +261,52 @@ const App: React.FC = () => {
     return null;
   }, [getPos]);
 
+  // -- INTERACTION ENGINE (JULIE FIX) --
+  const handlePointerDown = (clientX: number, clientY: number) => {
+    if (isMenuOpen || stateRef.current.winner || stateRef.current.isBlocked) return;
+    const s = stateRef.current;
+    if (s.turn !== s.userColor) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
+    const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+    const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+    const x = (clientX - rect.left - ox) / scale;
+    const y = (clientY - rect.top - oy) / scale;
+    
+    const zone = getZone(x, y, s.userColor === 'red');
+    if (zone?.type === 'bar' && s.bar[s.turn] > 0) {
+      grabbedRef.current = { player: s.turn, fromIndex: -1, x, y, isMouse: true };
+      setState(p => ({ ...p, grabbed: grabbedRef.current }));
+    } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) {
+      grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x, y, isMouse: true };
+      setState(p => ({ ...p, grabbed: grabbedRef.current }));
+    }
+  };
+
+  const handlePointerUp = (clientX: number, clientY: number) => {
+    if (!grabbedRef.current || !grabbedRef.current.isMouse) return;
+    const s = stateRef.current;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
+    const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+    const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+    const x = (clientX - rect.left - ox) / scale;
+    const y = (clientY - rect.top - oy) / scale;
+    
+    const tz = getZone(x, y, s.userColor === 'red');
+    if (tz) {
+      const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
+      if (to !== null) {
+        const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d));
+        if (possibleDice.length > 0) executeMove(grabbedRef.current!.fromIndex, to as any, possibleDice[0]);
+      }
+    }
+    grabbedRef.current = null;
+    setState(p => ({ ...p, grabbed: null }));
+  };
+
   useEffect(() => {
     if (view !== 'PLAYING') return;
     let anim: number;
@@ -267,34 +314,38 @@ const App: React.FC = () => {
       const ctx = canvasRef.current?.getContext('2d'); if (!ctx) return;
       const s = stateRef.current;
       const rev = s.userColor === 'red';
-      const tx = (rawHand.current.isDetected && !mouseState.current.isDown) ? rawHand.current.x : mouseState.current.x;
-      const ty = (rawHand.current.isDetected && !mouseState.current.isDown) ? rawHand.current.y : mouseState.current.y;
-      smoothHand.current.x += (tx - smoothHand.current.x) * 0.3;
-      smoothHand.current.y += (ty - smoothHand.current.y) * 0.3;
-      const { x, y } = smoothHand.current;
       
-      // PINCH SMOOTHING (Julie Stability Fix)
-      const currentPinch = (rawHand.current.isDetected && rawHand.current.isPinching) || mouseState.current.isDown;
-      pinchBuffer.current.push(currentPinch);
-      if (pinchBuffer.current.length > 5) pinchBuffer.current.shift();
-      const isPinchSteady = pinchBuffer.current.filter(b => b).length >= 4; // Mayoría simple para estabilidad
-      const isReleaseSteady = pinchBuffer.current.filter(b => !b).length >= 4;
+      // AR HAND LOGIC
+      if (rawHand.current.isDetected) {
+        smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.35;
+        smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.35;
+        
+        pinchBuffer.current.push(rawHand.current.isPinching);
+        if (pinchBuffer.current.length > 8) pinchBuffer.current.shift();
+        const isPinchSteady = pinchBuffer.current.filter(b => b).length >= 5;
+        const isReleaseSteady = pinchBuffer.current.filter(b => !b).length >= 6;
 
-      if (isPinchSteady && !grabbedRef.current && s.turn === s.userColor && !s.winner && !s.isBlocked && !isMenuOpen) {
-        const zone = getZone(x, y, rev);
-        if (zone?.type === 'bar' && s.bar[s.turn] > 0) grabbedRef.current = { player: s.turn, fromIndex: -1, x, y };
-        else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x, y };
-        if (grabbedRef.current) setState(prev => ({ ...prev, grabbed: grabbedRef.current }));
-      } else if (isReleaseSteady && grabbedRef.current) {
-        const tz = getZone(x, y, rev);
-        if (tz) {
-          const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
-          if (to !== null) {
-            const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d));
-            if (possibleDice.length > 0) executeMove(grabbedRef.current.fromIndex, to as any, possibleDice[0]);
+        if (isPinchSteady && !grabbedRef.current && s.turn === s.userColor && !s.winner && !s.isBlocked && !isMenuOpen) {
+          const zone = getZone(smoothHand.current.x, smoothHand.current.y, rev);
+          if (zone?.type === 'bar' && s.bar[s.turn] > 0) {
+            grabbedRef.current = { player: s.turn, fromIndex: -1, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false };
+            setState(p => ({ ...p, grabbed: grabbedRef.current }));
+          } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) {
+            grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false };
+            setState(p => ({ ...p, grabbed: grabbedRef.current }));
           }
+        } else if (isReleaseSteady && grabbedRef.current && !grabbedRef.current.isMouse) {
+          const tz = getZone(smoothHand.current.x, smoothHand.current.y, rev);
+          if (tz) {
+            const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
+            if (to !== null) {
+              const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d));
+              if (possibleDice.length > 0) executeMove(grabbedRef.current!.fromIndex, to as any, possibleDice[0]);
+            }
+          }
+          grabbedRef.current = null;
+          setState(p => ({ ...p, grabbed: null }));
         }
-        grabbedRef.current = null; setState(prev => ({ ...prev, grabbed: null }));
       }
 
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -317,8 +368,15 @@ const App: React.FC = () => {
       for(let i=0; i<s.off.white; i++) drawCh(ctx, 80, CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15, 'white');
       for(let i=0; i<s.off.red; i++) drawCh(ctx, 80, BOARD_PADDING + 40 + i*15, 'red');
       if (s.dice.length > 0) s.dice.forEach((d, i) => drawD(ctx, xB + 450 + (i === 0 ? -180 : 180), CANVAS_HEIGHT/2, d, s.turn));
-      if (grabbedRef.current) drawCh(ctx, x, y, grabbedRef.current.player, true);
-      if (rawHand.current.isDetected || mouseState.current.isDown) { ctx.beginPath(); ctx.arc(x, y, isPinchSteady ? 14 : 28, 0, Math.PI * 2); ctx.strokeStyle = isPinchSteady ? COLORS.gold : 'white'; ctx.lineWidth = 4; ctx.stroke(); }
+      
+      const drawX = grabbedRef.current?.isMouse ? mousePos.current.x : smoothHand.current.x;
+      const drawY = grabbedRef.current?.isMouse ? mousePos.current.y : smoothHand.current.y;
+      if (grabbedRef.current) drawCh(ctx, drawX, drawY, grabbedRef.current.player, true);
+      
+      if (rawHand.current.isDetected) {
+        ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 12 : 24, 0, Math.PI * 2);
+        ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : 'white'; ctx.lineWidth = 4; ctx.stroke();
+      }
       anim = requestAnimationFrame(draw);
     };
     anim = requestAnimationFrame(draw); return () => cancelAnimationFrame(anim);
@@ -339,29 +397,22 @@ const App: React.FC = () => {
     ds[v].forEach(([dx, dy]: any) => { ctx.beginPath(); ctx.arc(x+dx, y+dy, 7, 0, Math.PI * 2); ctx.fill(); }); ctx.restore();
   };
 
-  const handlePtr = (e: any) => {
-    const el = canvasRef.current; if (!el) return;
-    const r = el.getBoundingClientRect();
-    const cx = (e.clientX || e.touches?.[0].clientX) - r.left;
-    const cy = (e.clientY || e.touches?.[0].clientY) - r.top;
-    const scale = Math.min(r.width / CANVAS_WIDTH, r.height / CANVAS_HEIGHT);
-    const offsetX = (r.width - CANVAS_WIDTH * scale) / 2;
-    const offsetY = (r.height - CANVAS_HEIGHT * scale) / 2;
-    mouseState.current.x = (cx - offsetX) / scale;
-    mouseState.current.y = (cy - offsetY) / scale;
-  };
-
   // IA SECUENCIAL OPTIMIZADA
   useEffect(() => {
     if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING' && !isAiProcessing) {
       setIsAiProcessing(true);
       const runAILogic = async () => {
+        let startTime = Date.now();
         await new Promise(r => setTimeout(r, 1200));
         let current = stateRef.current;
         if (current.dice.length === 0) { rollDice(true); setIsAiProcessing(false); return; }
         const p = current.turn;
         const diceUniq = Array.from(new Set(current.movesLeft)).sort((a,b) => b-a);
         let moveFound = false;
+        
+        // Safety check to prevent infinite AI loops
+        if (Date.now() - startTime > 3000) { passTurn(); setIsAiProcessing(false); return; }
+
         for (const d of diceUniq) {
           if (current.bar[p] > 0) {
             const target = getTargetPoint(p, -1, d);
@@ -378,7 +429,10 @@ const App: React.FC = () => {
           }
           if (moveFound) break;
         }
-        if (!moveFound) { if (current.movesLeft.length > 0) setState(prev => ({ ...prev, movesLeft: prev.movesLeft.slice(1) })); else passTurn(); }
+        if (!moveFound) { 
+          if (current.movesLeft.length > 0) setState(prev => ({ ...prev, movesLeft: prev.movesLeft.slice(1) })); 
+          else passTurn(); 
+        }
         setIsAiProcessing(false);
       };
       runAILogic();
@@ -387,11 +441,19 @@ const App: React.FC = () => {
 
   return (
     <div className="w-full h-full bg-black relative flex flex-col overflow-hidden" 
-         onMouseMove={handlePtr} onTouchMove={handlePtr}
-         onMouseDown={(e) => { if(!isMenuOpen) mouseState.current.isDown = true; handlePtr(e); }} 
-         onMouseUp={() => mouseState.current.isDown = false}
-         onTouchStart={(e) => { if(!isMenuOpen) mouseState.current.isDown = true; handlePtr(e); }} 
-         onTouchEnd={() => mouseState.current.isDown = false}>
+         onMouseMove={(e) => {
+           const rect = canvasRef.current?.getBoundingClientRect();
+           if (!rect) return;
+           const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
+           const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+           const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+           mousePos.current.x = (e.clientX - rect.left - ox) / scale;
+           mousePos.current.y = (e.clientY - rect.top - oy) / scale;
+         }}
+         onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY)}
+         onMouseUp={(e) => handlePointerUp(e.clientX, e.clientY)}
+         onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
+         onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
       
       {state.isBlocked && (
         <div className="fixed inset-0 z-[900] flex items-center justify-center bg-black/80 backdrop-blur-xl">
@@ -423,8 +485,8 @@ const App: React.FC = () => {
                 <input type="text" placeholder="Escribe un código..." className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-white font-bold outline-none focus:border-yellow-600 transition-all" />
               </div>
               <div className="flex flex-col gap-3">
-                <button className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 active:scale-95 transition-all">Crear Partida</button>
-                <button className="w-full bg-white/5 text-white font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse</button>
+                <button onClick={() => { resetGame('ONLINE'); setView('PLAYING'); }} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 active:scale-95 transition-all">Crear Partida</button>
+                <button onClick={() => { resetGame('ONLINE'); setView('PLAYING'); }} className="w-full bg-white/5 text-white font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse</button>
               </div>
            </div>
            <button onClick={() => setView('HOME')} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Volver</button>
@@ -440,7 +502,7 @@ const App: React.FC = () => {
             <div className="flex gap-4 items-center">
               {state.turn === state.userColor && history.length > 0 && <button onClick={undoMove} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}
               <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
-                {state.turn === state.userColor ? 'TU TURNO' : 'ESPERANDO...'}
+                {state.turn === state.userColor ? 'TU TURNO' : 'IA PENSANDO...'}
               </div>
               <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all">Lanzar</button>
             </div>
