@@ -185,7 +185,7 @@ const App: React.FC = () => {
       playClack();
       const ns: GameState = { ...s, dice: [d1, d2], movesLeft: moves, history: [] };
       
-      // ONLINE: Sincronización de estado completa tras tirar dados
+      // ONLINE: Estado Maestro - Transmitimos tirada de dados
       if (ns.gameMode === 'ONLINE' && socketRef.current?.connected) {
         socketRef.current.emit('update-game', {
           roomID: ns.roomID,
@@ -213,13 +213,13 @@ const App: React.FC = () => {
     });
   }, [showNotify]);
 
-  // --- SOCKET Y RED (MEJORADO PARA CLOUD RUN Y CORS) ---
+  // --- SOCKET Y RED (MEJORADO PARA CLOUD RUN, CORS Y SINCRONIZACIÓN MAESTRA) ---
   const initSocket = useCallback((roomID: string, role: Player) => {
     const io = (window as any).io;
     if (!io) { showNotify("ERROR: SOCKET.IO NO CARGADO"); return; }
     if (socketRef.current) socketRef.current.disconnect();
 
-    // Julie: Configuración crítica para Cloud Run + CORS
+    // Julie: Configuración optimizada para Cloud Run y CORS
     const socket = io(SERVER_URL, {
       transports: ['websocket', 'polling'],
       withCredentials: true,
@@ -227,9 +227,9 @@ const App: React.FC = () => {
         'Access-Control-Allow-Origin': '*'
       },
       reconnection: true,
-      reconnectionAttempts: 30,
-      reconnectionDelay: 2000,
-      timeout: 45000,
+      reconnectionAttempts: 50,
+      reconnectionDelay: 1000,
+      timeout: 30000,
       forceNew: true
     });
     
@@ -237,17 +237,17 @@ const App: React.FC = () => {
 
     socket.on('connect', () => {
       socket.emit('join-room', { roomID, role });
-      showNotify(`CONECTADO: SALA ${roomID}`);
-      // Si somos el invitado (red), pedimos sync inmediato
+      showNotify(`CONECTADO A SALA: ${roomID}`);
+      // El invitado solicita el estado actual al anfitrión al conectar
       if (role === 'red') {
         socket.emit('request-sync', { roomID });
       }
     });
 
-    // Handshake Sincronizado: Alguien se unió
+    // Handshake Sincronizado: Ambos jugadores reciben 'player-joined'
     socket.on('player-joined', (data: any) => {
       setState(s => {
-        // El Host transmite su estado actual al nuevo oponente
+        // El Host (blanco) envía el tablero completo al nuevo rival
         if (role === 'white' && socketRef.current?.connected) {
           socketRef.current.emit('update-game', { 
             roomID, 
@@ -265,13 +265,18 @@ const App: React.FC = () => {
         }
         return { ...s, opponentConnected: true, status: 'PLAYING' };
       });
-      showNotify("¡OPONENTE CONECTADO!");
+      showNotify("¡RIVAL EN LÍNEA!");
     });
 
-    // Estado Maestro: Recibiendo actualización total
+    // ESTADO MAESTRO: Actualización total del tablero
     socket.on('update-game', (data: any) => {
       if (data && data.gameState) {
-        setState(s => ({ ...s, ...data.gameState }));
+        setState(s => ({ 
+          ...s, 
+          ...data.gameState, 
+          opponentConnected: true, 
+          status: 'PLAYING' // Forzamos vista PLAYING si llega actualización
+        }));
         if (data.gameState.dice) playClack();
       }
     });
@@ -281,7 +286,16 @@ const App: React.FC = () => {
         setState(s => {
           socket.emit('update-game', { 
             roomID, 
-            gameState: { points: s.points, bar: s.bar, off: s.off, turn: s.turn, dice: s.dice, movesLeft: s.movesLeft, opponentConnected: true } 
+            gameState: { 
+              points: s.points, 
+              bar: s.bar, 
+              off: s.off, 
+              turn: s.turn, 
+              dice: s.dice, 
+              movesLeft: s.movesLeft, 
+              opponentConnected: true,
+              status: 'PLAYING'
+            } 
           });
           return s;
         });
@@ -293,11 +307,11 @@ const App: React.FC = () => {
       showNotify("OPONENTE DESCONECTADO");
     });
 
-    socket.on('connect_error', (err: any) => {
-      console.warn("Re-intentando conexión multijugador...");
+    socket.on('connect_error', () => {
+      console.warn("Retrying multiplayer connection...");
     });
 
-    // Inicializar estado local y saltar a Playing
+    // Cambiamos vista y estado inicial. El Invitado entra directo a PLAYING tras Aceptar.
     setState(s => ({ 
       ...s, 
       roomID, 
@@ -439,7 +453,7 @@ const App: React.FC = () => {
       if (ns.off.white === 15) ns.winner = 'white';
       if (ns.off.red === 15) ns.winner = 'red';
 
-      // ONLINE: Sincronización de estado completa mediante update-game
+      // ONLINE: Estado Maestro - Sincronizamos tablero completo tras cada movimiento
       if (!isRemote && ns.gameMode === 'ONLINE' && socketRef.current?.connected) {
         socketRef.current.emit('update-game', {
           roomID: ns.roomID,
@@ -710,7 +724,7 @@ const App: React.FC = () => {
                       {state.opponentConnected ? 'CONECTADO' : 'ESPERANDO...'}
                     </span>
                   </div>
-                  {/* Solo el Host muestra el botón de copiar link */}
+                  {/* Julie: El botón de Copiar Link solo es para el Anfitrión (blanco) */}
                   {state.userColor === 'white' && (
                     <button onClick={copyInvite} className="bg-stone-800 p-2 rounded-lg border border-white/5 hover:bg-stone-700 active:scale-95 transition-all">
                       <svg className="w-4 h-4 text-yellow-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 00-2 2v14a2 2 0 002 2h11a2 2 0 002-2V7a2 2 0 00-2-2m-3-4H4a2 2 0 00-2 2v14h2V3h12V1z"/></svg>
@@ -755,7 +769,7 @@ const App: React.FC = () => {
                   <button onClick={() => setState(s => ({...s, points: initialPoints(), bar: {white:0,red:0}, off: {white:0,red:0}, history: [], dice: [], movesLeft: []}))} className="w-full bg-red-950/20 border border-red-500/20 py-4 rounded-xl text-red-500 font-black text-[10px] uppercase tracking-widest hover:bg-red-950/40 transition-colors">Reiniciar Tablero</button>
                 </div>
              </div>
-             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v3.2 Production Edition</div>
+             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v3.3 Multi-Sync Edition</div>
           </aside>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden" style={{ touchAction: 'none' }}>
