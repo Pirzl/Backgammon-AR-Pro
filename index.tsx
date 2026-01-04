@@ -83,7 +83,7 @@ const initialPoints = (): Point[] => {
   return p;
 };
 
-// --- HOOK: HAND TRACKING ---
+// --- HOOK: HAND TRACKING (FIXED LOADGRAPH) ---
 const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isActive: boolean) => {
   const [isARLoading, setIsARLoading] = useState(true);
   const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
@@ -93,18 +93,20 @@ const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isA
   useEffect(() => {
     if (!isActive) return;
 
-    const Hands = (window as any).Hands;
-    const Camera = (window as any).Camera;
-    
+    let mounted = true;
+
     const initTracking = async () => {
-      // Fix Julie: Verificamos existencia de bibliotecas para evitar errores de carga prematura
-      if (!Hands || !Camera || !videoRef.current) {
-        if (isActive) setTimeout(initTracking, 500);
+      const HandsClass = (window as any).Hands;
+      const CameraClass = (window as any).Camera;
+      
+      // Julie Fix: Esperar a que las librerías globales existan antes de llamar constructores
+      if (!HandsClass || !CameraClass || !videoRef.current) {
+        if (mounted) setTimeout(initTracking, 300);
         return;
       }
 
       try {
-        const hands = new Hands({
+        const hands = new HandsClass({
           locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
         });
 
@@ -116,6 +118,7 @@ const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isA
         });
 
         hands.onResults((results: any) => {
+          if (!mounted) return;
           if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             const landmarks = results.multiHandLandmarks[0];
             const indexTip = landmarks[8];
@@ -140,23 +143,27 @@ const useHandTracking = (videoRef: React.RefObject<HTMLVideoElement | null>, isA
 
         handsRef.current = hands;
 
-        cameraRef.current = new Camera(videoRef.current, {
+        cameraRef.current = new CameraClass(videoRef.current, {
           onFrame: async () => {
-            if (videoRef.current && handsRef.current) await handsRef.current.send({ image: videoRef.current });
+            if (mounted && videoRef.current && handsRef.current) {
+              await handsRef.current.send({ image: videoRef.current });
+            }
           },
           width: 1280,
           height: 720,
         });
+        
         await cameraRef.current.start();
-        setIsARLoading(false);
+        if (mounted) setIsARLoading(false);
       } catch (err) {
-        console.warn("Hand Tracking Init Error:", err);
-        setIsARLoading(false);
+        console.warn("MediaPipe Sincronización fallida, reintentando...", err);
+        if (mounted) setTimeout(initTracking, 1000);
       }
     };
 
     initTracking();
     return () => {
+      mounted = false;
       cameraRef.current?.stop();
       if (handsRef.current) handsRef.current.close();
     };
@@ -198,14 +205,38 @@ const App: React.FC = () => {
     setTimeout(() => setNotification(null), 3000);
   }, []);
 
-  // --- SOCKET Y RED (MEJORADO POR JULIE) ---
+  // --- LÓGICA DE DADOS (TURN INDEPENDENT FOR IA) ---
+  const rollDice = useCallback((forced: boolean = false) => {
+    setState(s => {
+      // Si no es IA forzada y no es el turno del usuario, no tirar
+      if (!forced && (s.movesLeft.length > 0 || s.turn !== s.userColor || s.winner)) return s;
+      
+      const d1 = Math.floor(Math.random() * 6) + 1;
+      const d2 = Math.floor(Math.random() * 6) + 1;
+      const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+      
+      if (s.gameMode === 'ONLINE' && socketRef.current?.connected) {
+        socketRef.current.emit('dice', { dice: [d1, d2], moves, roomID: s.roomID });
+      }
+      
+      playClack();
+      
+      const ns: GameState = { ...s, dice: [d1, d2], movesLeft: moves, history: [] };
+      if (!hasAnyLegalMoves(ns)) {
+        showNotify("SIN MOVIMIENTOS: TURNO CEDIDO");
+        setTimeout(() => setState(prev => ({...prev, turn: prev.turn === 'white' ? 'red' : 'white', dice: [], movesLeft: []})), 1500);
+      }
+      return ns;
+    });
+  }, [showNotify]);
+
+  // --- SOCKET Y RED ---
   const initSocket = useCallback((roomID: string, role: Player) => {
     const io = (window as any).io;
     if (!io) { showNotify("ERROR: SOCKET.IO NO CARGADO"); return; }
     
     if (socketRef.current) socketRef.current.disconnect();
 
-    // Julie Pro Tip: 'polling' + 'websocket' para evitar bloqueos
     const socket = io(SERVER_URL, {
       transports: ['polling', 'websocket'],
       reconnection: true,
@@ -244,10 +275,8 @@ const App: React.FC = () => {
       }
     });
 
-    socket.on('connect_error', (err: any) => {
-      console.warn("Socket connection failed. RoomID reset.");
-      setState(s => ({ ...s, opponentConnected: false }));
-      showNotify("ERROR DE SERVIDOR: MODO LOCAL");
+    socket.on('connect_error', () => {
+      showNotify("FALLO DE RED: MODO LOCAL");
     });
 
     setState(s => ({ 
@@ -269,14 +298,13 @@ const App: React.FC = () => {
     });
   }, [state.roomID, showNotify]);
 
-  // Julie: Auto-join para invitados que entran por link
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const room = urlParams.get('room');
     if (room && view === 'HOME') {
       const rid = room.toUpperCase();
       setJoinIdInput(rid);
-      initSocket(rid, 'red'); // Invitado es siempre Red
+      initSocket(rid, 'red');
     }
   }, [view, initSocket]);
 
@@ -417,38 +445,17 @@ const App: React.FC = () => {
     playClack();
   }, [state.history, state.gameMode]);
 
-  const rollDice = useCallback(() => {
-    if (state.movesLeft.length > 0 || state.turn !== state.userColor || state.winner) return;
-    const d1 = Math.floor(Math.random() * 6) + 1;
-    const d2 = Math.floor(Math.random() * 6) + 1;
-    const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
-    
-    if (state.gameMode === 'ONLINE' && socketRef.current?.connected) {
-      socketRef.current.emit('dice', { dice: [d1, d2], moves, roomID: state.roomID });
-    }
-    
-    setState(s => {
-      const ns: GameState = { ...s, dice: [d1, d2], movesLeft: moves, history: [] };
-      if (!hasAnyLegalMoves(ns)) {
-        showNotify("SIN MOVIMIENTOS: TURNO CEDIDO");
-        setTimeout(() => setState(prev => ({...prev, turn: prev.turn === 'white' ? 'red' : 'white', dice: [], movesLeft: []})), 1500);
-      }
-      return ns;
-    });
-    playClack();
-  }, [state, showNotify]);
-
-  // --- LÓGICA IA (OPTIMIZADA) ---
+  // --- LÓGICA IA ---
   useEffect(() => {
-    if (view !== 'PLAYING' || state.gameMode !== 'AI' || state.turn === state.userColor || state.winner || isAiActing.current) return;
+    if (view !== 'PLAYING' || state.gameMode !== 'AI' || state.turn === state.userColor || state.winner) return;
     
     const aiTimer = setTimeout(() => {
       if (isAiActing.current) return;
       isAiActing.current = true;
 
       if (state.dice.length === 0 && state.movesLeft.length === 0) {
-        // Julie: La IA tira automáticamente
-        rollDice();
+        // IA tira dados forzando el bypass del chequeo de turno
+        rollDice(true);
       } else {
         const p = state.turn;
         const possible: any[] = [];
@@ -725,7 +732,7 @@ const App: React.FC = () => {
               <div className={`px-8 py-2.5 rounded-full font-black text-[10px] tracking-widest uppercase border-2 transition-all ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'bg-transparent text-white/30 border-white/10'}`}>
                 {state.turn === state.userColor ? 'TU TURNO' : 'TURNO RIVAL'}
               </div>
-              <button onClick={rollDice} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[10px] tracking-widest disabled:opacity-10 active:scale-95 transition-all shadow-xl">🎲 TIRAR</button>
+              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[10px] tracking-widest disabled:opacity-10 active:scale-95 transition-all shadow-xl">🎲 TIRAR</button>
             </div>
           </header>
 
@@ -758,7 +765,7 @@ const App: React.FC = () => {
                 </div>
              </div>
              
-             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v2.9.1 Pro Edition</div>
+             <div className="mt-auto text-center opacity-20 text-[8px] font-bold uppercase tracking-[0.4em]">v2.9.2 Pro Edition</div>
           </aside>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden" style={{ touchAction: 'none' }}>
