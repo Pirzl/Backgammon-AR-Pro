@@ -179,6 +179,7 @@ const App: React.FC = () => {
   const smoothHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
   const pinchBuffer = useRef<boolean[]>([]);
   const grabbedRef = useRef<GrabbedInfo | null>(null);
+  const syncChannel = useRef<BroadcastChannel | null>(null);
 
   const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
@@ -191,7 +192,42 @@ const App: React.FC = () => {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  // Deep Linking Check: Solo si entramos por un link con ?room=
+  // --- MULTIJUGADOR SYNC ENGINE ---
+  const broadcastState = useCallback((newState: Partial<GameState>) => {
+    if (syncChannel.current) {
+      syncChannel.current.postMessage({ type: 'STATE_SYNC', payload: newState });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (state.roomID) {
+      const channel = new BroadcastChannel(`bgammon_room_${state.roomID}`);
+      syncChannel.current = channel;
+
+      channel.onmessage = (event) => {
+        const { type, payload } = event.data;
+        if (type === 'HANDSHAKE') {
+          // Si somos el host y recibimos un handshake, marcamos como conectado y enviamos nuestro estado actual
+          if (stateRef.current.isHost) {
+            setState(s => ({ ...s, onlineOpponentConnected: true }));
+            channel.postMessage({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
+          }
+        }
+        if (type === 'HANDSHAKE_ACK') {
+          // Si somos el invitado y recibimos el ACK, sincronizamos todo el tablero
+          setState(payload);
+          setState(s => ({ ...s, onlineOpponentConnected: true, isHost: false, userColor: 'red' }));
+        }
+        if (type === 'STATE_SYNC') {
+          setState(s => ({ ...s, ...payload }));
+        }
+      };
+
+      return () => channel.close();
+    }
+  }, [state.roomID]);
+
+  // Deep Linking Check
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
@@ -208,11 +244,13 @@ const App: React.FC = () => {
     setHistory([]);
     setIsAiProcessing(false);
     grabbedRef.current = null;
-    setState(s => ({
-      ...s, points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
+    const newState = {
+      ...stateRef.current, points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
       turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, gameMode: mode, isBlocked: false
-    }));
-  }, []);
+    };
+    setState(newState);
+    if (mode === 'ONLINE') broadcastState(newState);
+  }, [broadcastState]);
 
   useEffect(() => {
     if (view !== 'PLAYING') return;
@@ -242,21 +280,32 @@ const App: React.FC = () => {
       const d2 = Math.floor(Math.random() * 6) + 1;
       const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
       const nextS = { ...s, dice: [d1, d2], movesLeft: moves };
-      return { ...nextS, isBlocked: !hasAnyLegalMove(nextS as any) && !s.winner };
+      const isBlocked = !hasAnyLegalMove(nextS as any) && !s.winner;
+      const result = { ...nextS, isBlocked };
+      if (s.gameMode === 'ONLINE') broadcastState(result);
+      return result;
     });
-  }, []);
+  }, [broadcastState]);
 
   const passTurn = useCallback(() => {
     setHistory([]);
     setIsAiProcessing(false);
-    setState(s => ({ ...s, turn: (s.turn === 'white' ? 'red' : 'white'), dice: [], movesLeft: [], isBlocked: false }));
-  }, []);
+    setState(s => {
+      const result = { ...s, turn: (s.turn === 'white' ? 'red' : 'white') as Player, dice: [], movesLeft: [], isBlocked: false };
+      if (s.gameMode === 'ONLINE') broadcastState(result);
+      return result;
+    });
+  }, [broadcastState]);
 
   const undoMove = () => {
     if (history.length === 0) return;
     const last = history[history.length - 1];
     setHistory(h => h.slice(0, -1));
-    setState(s => ({ ...s, ...last, isBlocked: false }));
+    setState(s => {
+      const result = { ...s, ...last, isBlocked: false };
+      if (s.gameMode === 'ONLINE') broadcastState(result);
+      return result;
+    });
   };
 
   const executeMove = (from: number, to: number | 'off', die: number) => {
@@ -280,13 +329,12 @@ const App: React.FC = () => {
       if (ns.off.white === 15) { ns.winner = 'white'; playSound('win'); }
       else if (ns.off.red === 15) { ns.winner = 'red'; playSound('win'); }
 
-      if (ns.winner) {
-        ns.isBlocked = false;
-        ns.movesLeft = [];
-      } else {
+      if (ns.winner) { ns.isBlocked = false; ns.movesLeft = []; }
+      else {
         if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
         else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); }
       }
+      if (ns.gameMode === 'ONLINE') broadcastState(ns);
       return ns;
     });
   };
@@ -465,6 +513,7 @@ const App: React.FC = () => {
     ctx.restore();
   };
 
+  // IA SECUENCIAL (Solo activa si modo === AI)
   useEffect(() => {
     if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING' && !isAiProcessing) {
       setIsAiProcessing(true);
@@ -498,11 +547,11 @@ const App: React.FC = () => {
       };
       runAILogic();
     }
-  }, [state.turn, state.dice.length, state.movesLeft.length, isAiProcessing, view, state.gameMode]);
+  }, [state.turn, state.dice.length, state.movesLeft.length, isAiProcessing, view, state.gameMode, rollDice, passTurn]);
 
   const generateRoom = () => {
     const id = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE', isHost: true }));
+    setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE', isHost: true, onlineOpponentConnected: false }));
     setView('INVITE_SENT');
   };
 
@@ -516,8 +565,15 @@ const App: React.FC = () => {
 
   const joinByCode = (code: string) => {
     if (!code) return;
-    setState(s => ({ ...s, roomID: code.toUpperCase(), userColor: 'red', gameMode: 'ONLINE', isHost: false }));
+    setState(s => ({ ...s, roomID: code.toUpperCase(), userColor: 'red', gameMode: 'ONLINE', isHost: false, onlineOpponentConnected: false }));
     setView('ONLINE_LOBBY');
+  };
+
+  const acceptInvite = () => {
+    if (syncChannel.current) {
+      syncChannel.current.postMessage({ type: 'HANDSHAKE' });
+    }
+    setView('PLAYING');
   };
 
   return (
@@ -567,7 +623,7 @@ const App: React.FC = () => {
                 <div className="text-center space-y-6">
                   <p className="text-white/60 uppercase font-black text-xs tracking-widest">Has sido invitado a la sala</p>
                   <div className="text-5xl font-black text-yellow-600 bg-black/40 py-6 rounded-2xl border border-white/5">{state.roomID}</div>
-                  <button onClick={() => setView('PLAYING')} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all pulse-gold">Aceptar Reto</button>
+                  <button onClick={acceptInvite} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all pulse-gold">Aceptar Reto</button>
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
@@ -609,11 +665,18 @@ const App: React.FC = () => {
               </div>
 
               <div className="pt-4 flex flex-col items-center">
-                 <div className="flex items-center gap-3 text-white/20 animate-pulse">
-                   <div className="w-2 h-2 bg-yellow-600 rounded-full"></div>
-                   <span className="text-[10px] font-black uppercase tracking-widest">Esperando que el rival se una...</span>
-                 </div>
-                 <button onClick={() => setView('PLAYING')} className="mt-6 w-full bg-white/5 text-white/60 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all text-[10px] tracking-widest">Empezar sin esperar</button>
+                 {state.onlineOpponentConnected ? (
+                   <div className="animate-in fade-in duration-500 scale-110">
+                      <div className="text-green-500 font-black uppercase tracking-widest text-sm mb-4">¡RIVAL CONECTADO!</div>
+                      <button onClick={() => setView('PLAYING')} className="bg-yellow-600 text-black font-black px-12 py-4 rounded-full uppercase shadow-glow pulse-gold">EMPEZAR PARTIDA</button>
+                   </div>
+                 ) : (
+                   <div className="flex items-center gap-3 text-white/20 animate-pulse">
+                     <div className="w-2 h-2 bg-yellow-600 rounded-full"></div>
+                     <span className="text-[10px] font-black uppercase tracking-widest">Esperando que el rival se una...</span>
+                   </div>
+                 )}
+                 {!state.onlineOpponentConnected && <button onClick={() => setView('PLAYING')} className="mt-6 w-full bg-white/5 text-white/60 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all text-[10px] tracking-widest">Empezar sin esperar (Local)</button>}
               </div>
            </div>
            <button onClick={() => { setView('HOME'); setState(s => ({ ...s, roomID: '' })); }} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
