@@ -55,7 +55,7 @@ const playSound = (type: 'dice' | 'checker' | 'win') => {
 
 // --- TYPES ---
 export type Player = 'white' | 'red';
-export type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING';
+export type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING' | 'CONNECTING';
 export type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
 export interface Point { checkers: Player[]; }
 export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; }
@@ -209,23 +209,28 @@ const App: React.FC = () => {
   }, []);
 
   const broadcastState = useCallback((newState: Partial<GameState>) => {
-    if (connRef.current && stateRef.current.gameMode === 'ONLINE') {
+    if (connRef.current && stateRef.current.gameMode === 'ONLINE' && connRef.current.open) {
         const { grabbed, ...syncData } = newState as any;
         connRef.current.send({ type: 'STATE_SYNC', payload: syncData });
     }
   }, []);
 
-  // --- MULTIPLAYER P2P (PEERJS) MEJORADO PARA CROSS-BROWSER ---
+  // --- MULTIPLAYER P2P (PEERJS) ROBUSTO ---
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
-        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 8)}`;
+        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 6)}`;
+        
+        if (peerRef.current) peerRef.current.destroy();
+
         const peer = new (window as any).Peer(peerID, { 
             debug: 0,
             config: { 
                 'iceServers': [
                     { 'urls': 'stun:stun.l.google.com:19302' },
                     { 'urls': 'stun:stun1.l.google.com:19302' },
-                    { 'urls': 'stun:stun2.l.google.com:19302' }
+                    { 'urls': 'stun:stun2.l.google.com:19302' },
+                    { 'urls': 'stun:stun3.l.google.com:19302' },
+                    { 'urls': 'stun:stun4.l.google.com:19302' }
                 ] 
             } 
         });
@@ -233,32 +238,15 @@ const App: React.FC = () => {
 
         peer.on('open', () => {
             if (!state.isHost) {
-                const initiateConnection = () => {
-                    const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
-                    setupConnection(conn);
-                    
-                    conn.on('open', () => {
-                        // Handshake persistente: avisar hasta recibir respuesta
-                        if (handshakeInterval.current) clearInterval(handshakeInterval.current);
-                        handshakeInterval.current = setInterval(() => {
-                            if (conn.open) {
-                                conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
-                            } else {
-                                clearInterval(handshakeInterval.current);
-                            }
-                        }, 1000);
-                        // Primer envío inmediato
-                        conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
-                    });
-                    
-                    conn.on('error', (err: any) => {
-                        console.warn("Connection error, retrying...", err);
-                        setTimeout(initiateConnection, 2000);
-                    });
-                };
-                initiateConnection();
+                attemptConnection();
             }
         });
+
+        const attemptConnection = () => {
+            if (!peer.open || stateRef.current.isHost) return;
+            const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
+            setupConnection(conn);
+        };
 
         peer.on('connection', (conn: any) => {
             if (stateRef.current.isHost) {
@@ -268,24 +256,29 @@ const App: React.FC = () => {
 
         const setupConnection = (conn: any) => {
             connRef.current = conn;
+            
+            conn.on('open', () => {
+                if (!stateRef.current.isHost) {
+                    // Invitado inicia handshake
+                    if (handshakeInterval.current) clearInterval(handshakeInterval.current);
+                    handshakeInterval.current = setInterval(() => {
+                        if (conn.open) {
+                            conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
+                        }
+                    }, 1500);
+                    conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
+                }
+            });
+
             conn.on('data', (data: any) => {
                 const { type, payload } = data;
                 
-                // HOST: Recibe saludo del invitado
                 if (type === 'GUEST_HELLO' && stateRef.current.isHost) {
-                    // Solo actualizar si no estábamos conectados o si es un nuevo handshake
-                    setState(s => {
-                        if (!s.onlineOpponentConnected) {
-                            return { ...s, onlineOpponentConnected: true };
-                        }
-                        return s;
-                    });
-                    // El host SIEMPRE responde con el estado actual al recibir un saludo
+                    setState(s => ({ ...s, onlineOpponentConnected: true }));
                     conn.send({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
                 }
 
-                // GUEST: Recibe confirmación del host
-                if (type === 'HANDSHAKE_ACK') {
+                if (type === 'HANDSHAKE_ACK' && !stateRef.current.isHost) {
                     if (handshakeInterval.current) {
                         clearInterval(handshakeInterval.current);
                         handshakeInterval.current = null;
@@ -295,12 +288,11 @@ const App: React.FC = () => {
                       onlineOpponentConnected: true, 
                       isHost: false, 
                       userColor: 'red',
-                      roomID: stateRef.current.roomID // Asegurar que el ID no se pierda
+                      roomID: s.roomID // Mantener ID propio
                     }));
                     setView('PLAYING');
                 }
 
-                // SYNC: Actualización de estado de juego
                 if (type === 'STATE_SYNC') {
                     setState(s => ({
                       ...s, ...payload,
@@ -316,25 +308,25 @@ const App: React.FC = () => {
 
             conn.on('close', () => {
                 setState(s => ({ ...s, onlineOpponentConnected: false }));
-                if (handshakeInterval.current) clearInterval(handshakeInterval.current);
+            });
+            
+            conn.on('error', () => {
+                if (!stateRef.current.isHost) setTimeout(attemptConnection, 3000);
             });
         };
 
         return () => { 
-            if (peer) peer.destroy(); 
             if (handshakeInterval.current) clearInterval(handshakeInterval.current);
         };
     }
   }, [state.roomID, state.gameMode]);
 
-  // Asegurar transición del Host a la pantalla de juego
   useEffect(() => {
-    if (state.isHost && state.onlineOpponentConnected && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY' || view === 'HOME')) {
+    if (state.isHost && state.onlineOpponentConnected && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY')) {
         setView('PLAYING');
     }
   }, [state.onlineOpponentConnected, view, state.isHost]);
 
-  // Manejo de carga inicial vía URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
@@ -717,15 +709,39 @@ const App: React.FC = () => {
   };
 
   const acceptInvite = () => {
-      setView('PLAYING');
+      setView('CONNECTING');
+      // El useEffect de PeerJS se encargará de intentar conectar con el roomID actual
   };
 
   const exitGame = () => {
+    if (handshakeInterval.current) {
+        clearInterval(handshakeInterval.current);
+        handshakeInterval.current = null;
+    }
+    if (connRef.current) {
+        try { connRef.current.close(); } catch(e) {}
+        connRef.current = null;
+    }
+    if (peerRef.current) {
+        try { peerRef.current.destroy(); } catch(e) {}
+        peerRef.current = null;
+    }
+
     clearRoomURL();
-    resetGame('LOCAL');
-    setView('HOME');
+    setHistory([]);
+    setIsAiProcessing(false);
     setIsMenuOpen(false);
-    if (peerRef.current) peerRef.current.destroy();
+    grabbedRef.current = null;
+    
+    // Reseteo total de estado
+    setState({
+      points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
+      turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, 
+      gameMode: 'LOCAL', userColor: 'white', roomID: '', isHost: true, 
+      boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false, onlineOpponentConnected: false
+    });
+    
+    setView('HOME');
   };
 
   return (
@@ -797,7 +813,15 @@ const App: React.FC = () => {
                 </div>
               )}
            </div>
-           <button onClick={() => setView('HOME')} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Volver</button>
+           <button onClick={exitGame} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Volver</button>
+        </div>
+      )}
+
+      {view === 'CONNECTING' && (
+        <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center p-8">
+           <div className="w-16 h-16 border-4 border-yellow-600 border-t-transparent rounded-full animate-spin mb-8"></div>
+           <p className="text-white font-black uppercase tracking-widest text-sm animate-pulse">Estableciendo conexión segura...</p>
+           <button onClick={exitGame} className="mt-12 text-white/30 text-[10px] uppercase underline">Cancelar</button>
         </div>
       )}
 
@@ -823,7 +847,7 @@ const App: React.FC = () => {
                  {state.onlineOpponentConnected ? (
                    <div className="animate-in fade-in duration-500">
                       <div className="text-green-500 font-black uppercase tracking-widest text-sm">¡RIVAL CONECTADO!</div>
-                      <div className="text-white/40 text-[9px] font-bold animate-pulse uppercase mt-2">Iniciando tablero...</div>
+                      <div className="text-white/40 text-[9px] font-bold animate-pulse uppercase mt-2">Sincronizando tablero...</div>
                    </div>
                  ) : (
                    <div className="flex items-center gap-3 text-white/20 animate-pulse">
