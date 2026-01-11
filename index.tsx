@@ -58,7 +58,7 @@ export type Player = 'white' | 'red';
 export type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING' | 'CONNECTING';
 export type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
 export interface Point { checkers: Player[]; }
-export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; }
+export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; offsetY: number; }
 export interface GameStateSnapshot {
   points: Point[];
   bar: { white: number, red: number };
@@ -82,6 +82,7 @@ export interface GameState {
   cameraOpacity: number;
   isBlocked: boolean;
   onlineOpponentConnected: boolean;
+  isFlipped: boolean; // Para la función de rotación solicitada
 }
 
 // --- CONSTANTS ---
@@ -194,7 +195,7 @@ const App: React.FC = () => {
     turn: 'white', dice: [], movesLeft: [], grabbed: null,
     winner: null, gameMode: 'LOCAL', userColor: 'white',
     roomID: '', isHost: true, boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false,
-    onlineOpponentConnected: false
+    onlineOpponentConnected: false, isFlipped: false
   });
 
   const stateRef = useRef(state);
@@ -219,40 +220,21 @@ const App: React.FC = () => {
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
         const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 6)}`;
-        
         if (peerRef.current) peerRef.current.destroy();
-
         const peer = new (window as any).Peer(peerID, { 
             debug: 0,
-            config: { 
-                'iceServers': [
-                    { 'urls': 'stun:stun.l.google.com:19302' },
-                    { 'urls': 'stun:stun1.l.google.com:19302' },
-                    { 'urls': 'stun:stun2.l.google.com:19302' },
-                    { 'urls': 'stun:stun3.l.google.com:19302' },
-                    { 'urls': 'stun:stun4.l.google.com:19302' }
-                ] 
-            } 
+            config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] } 
         });
         peerRef.current = peer;
-
-        peer.on('open', () => {
-            if (!state.isHost) attemptConnection();
-        });
-
+        peer.on('open', () => { if (!state.isHost) attemptConnection(); });
         const attemptConnection = () => {
             if (!peer.open || stateRef.current.isHost) return;
             const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
             setupConnection(conn);
         };
-
-        peer.on('connection', (conn: any) => {
-            if (stateRef.current.isHost) setupConnection(conn);
-        });
-
+        peer.on('connection', (conn: any) => { if (stateRef.current.isHost) setupConnection(conn); });
         const setupConnection = (conn: any) => {
             connRef.current = conn;
-            
             conn.on('open', () => {
                 if (!stateRef.current.isHost) {
                     if (handshakeInterval.current) clearInterval(handshakeInterval.current);
@@ -262,7 +244,6 @@ const App: React.FC = () => {
                     conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
                 }
             });
-
             conn.on('data', (data: any) => {
                 const { type, payload } = data;
                 if (type === 'GUEST_HELLO' && stateRef.current.isHost) {
@@ -277,7 +258,7 @@ const App: React.FC = () => {
                 if (type === 'STATE_SYNC') {
                     setState(s => ({
                       ...s, ...payload,
-                      userColor: s.userColor, isHost: s.isHost, roomID: s.roomID,
+                      userColor: s.userColor, isHost: s.isHost, roomID: s.roomID, isFlipped: s.isFlipped,
                       boardOpacity: s.boardOpacity, cameraOpacity: s.cameraOpacity, onlineOpponentConnected: true
                     }));
                 }
@@ -289,11 +270,7 @@ const App: React.FC = () => {
     }
   }, [state.roomID, state.gameMode]);
 
-  useEffect(() => {
-    if (state.isHost && state.onlineOpponentConnected && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY')) {
-        setView('PLAYING');
-    }
-  }, [state.onlineOpponentConnected, view, state.isHost]);
+  useEffect(() => { if (state.isHost && state.onlineOpponentConnected && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY')) setView('PLAYING'); }, [state.onlineOpponentConnected, view, state.isHost]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -308,25 +285,16 @@ const App: React.FC = () => {
   const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
 
   const resetGame = useCallback((mode: GameMode = 'LOCAL') => {
-    setHistory([]);
-    setIsAiProcessing(false);
-    grabbedRef.current = null;
-    const newState = {
-      ...stateRef.current, points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
-      turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, gameMode: mode, isBlocked: false
-    };
-    setState(newState);
-    broadcastState(newState);
+    setHistory([]); setIsAiProcessing(false); grabbedRef.current = null;
+    const newState = { ...stateRef.current, points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 }, turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, gameMode: mode, isBlocked: false };
+    setState(newState); broadcastState(newState);
   }, [broadcastState]);
 
   // --- AR LOGIC ---
   useEffect(() => {
     if (view !== 'PLAYING') return;
-    let mounted = true;
-    let cameraInstance: any = null;
-    const HandsClass = (window as any).Hands;
-    const CameraClass = (window as any).Camera;
-    
+    let mounted = true; let cameraInstance: any = null;
+    const HandsClass = (window as any).Hands; const CameraClass = (window as any).Camera;
     const initAR = async () => {
       if (!HandsClass || !CameraClass || !videoRef.current) { if (mounted) setIsARLoading(false); return; }
       const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
@@ -343,55 +311,41 @@ const App: React.FC = () => {
         await cameraInstance.start();
       } catch (err: any) { setCameraError("Cámara ocupada."); if (mounted) setIsARLoading(false); } finally { if (mounted) setIsARLoading(false); }
     };
-    initAR();
-    return () => { mounted = false; if (cameraInstance) try { cameraInstance.stop(); } catch(e) {} };
+    initAR(); return () => { mounted = false; if (cameraInstance) try { cameraInstance.stop(); } catch(e) {} };
   }, [view]);
 
   const rollDice = useCallback((forced: boolean = false) => {
-    const s = stateRef.current;
-    if (!(s.gameMode === 'LOCAL' || s.turn === s.userColor) && !forced) return;
-    playSound('dice');
-    setHistory([]);
+    const s = stateRef.current; if (!(s.gameMode === 'LOCAL' || s.turn === s.userColor) && !forced) return;
+    playSound('dice'); setHistory([]);
     setState(s => {
       if (!forced && (s.movesLeft.length > 0 || s.winner)) return s;
-      const d1 = Math.floor(Math.random() * 6) + 1;
-      const d2 = Math.floor(Math.random() * 6) + 1;
+      const d1 = Math.floor(Math.random() * 6) + 1; const d2 = Math.floor(Math.random() * 6) + 1;
       const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
       const result = { ...s, dice: [d1, d2], movesLeft: moves, isBlocked: !hasAnyLegalMove({ ...s, dice: [d1, d2], movesLeft: moves } as any) && !s.winner };
-      broadcastState(result);
-      return result;
+      broadcastState(result); return result;
     });
   }, [broadcastState]);
 
   const passTurn = useCallback(() => {
-    setHistory([]);
-    setIsAiProcessing(false);
+    setHistory([]); setIsAiProcessing(false);
     setState(s => {
       const result = { ...s, turn: (s.turn === 'white' ? 'red' : 'white') as Player, dice: [], movesLeft: [], isBlocked: false };
-      broadcastState(result);
-      return result;
+      broadcastState(result); return result;
     });
   }, [broadcastState]);
 
   const undoMove = () => {
     if (history.length === 0) return;
-    const last = history[history.length - 1];
-    setHistory(h => h.slice(0, -1));
-    setState(s => {
-      const result = { ...s, ...last, isBlocked: false };
-      broadcastState(result);
-      return result;
-    });
+    const last = history[history.length - 1]; setHistory(h => h.slice(0, -1));
+    setState(s => { const result = { ...s, ...last, isBlocked: false }; broadcastState(result); return result; });
   };
 
   const executeMove = (from: number, to: number | 'off', die: number) => {
-    const current = stateRef.current;
-    if (!isValidMove(current, current.turn, from, to, die)) return;
+    const current = stateRef.current; if (!isValidMove(current, current.turn, from, to, die)) return;
     playSound('checker');
     setHistory(h => [...h, { points: JSON.parse(JSON.stringify(current.points)), bar: { ...current.bar }, off: { ...current.off }, movesLeft: [...current.movesLeft] }]);
     setState(curr => {
-      const ns = JSON.parse(JSON.stringify(curr)) as GameState;
-      const p = ns.turn;
+      const ns = JSON.parse(JSON.stringify(curr)) as GameState; const p = ns.turn;
       if (from === -1) ns.bar[p]--; else ns.points[from].checkers.pop();
       if (to === 'off') ns.off[p]++;
       else {
@@ -400,48 +354,45 @@ const App: React.FC = () => {
         else target.checkers.push(p);
       }
       ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
-      if (ns.off.white === 15) { ns.winner = 'white'; playSound('win'); }
-      else if (ns.off.red === 15) { ns.winner = 'red'; playSound('win'); }
+      if (ns.off.white === 15) { ns.winner = 'white'; playSound('win'); } else if (ns.off.red === 15) { ns.winner = 'red'; playSound('win'); }
       if (ns.winner) { ns.isBlocked = false; ns.movesLeft = []; }
       else {
         if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
         else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); }
       }
-      broadcastState(ns);
-      return ns;
+      broadcastState(ns); return ns;
     });
   };
 
-  const getPos = useCallback((idx: number, isUserRed: boolean) => {
-    const vIdx = isUserRed ? 23 - idx : idx;
-    const isTop = vIdx >= 12;
-    const relIdx = isTop ? 23 - vIdx : vIdx;
+  const getPos = useCallback((idx: number, isUserRed: boolean, isFlipped: boolean) => {
+    let effectiveIdx = isUserRed ? 23 - idx : idx;
+    if (isFlipped) effectiveIdx = 23 - effectiveIdx; // Función rotar/flip solicitada
+    const isTop = effectiveIdx >= 12;
+    const relIdx = isTop ? 23 - effectiveIdx : effectiveIdx;
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50; 
     const x = xBase + (relIdx * 70) + (relIdx >= 6 ? CENTER_BAR_WIDTH : 0);
     return { x: x + 35, y: isTop ? BOARD_PADDING : CANVAS_HEIGHT - BOARD_PADDING, isTop };
   }, []);
 
-  const getZone = useCallback((x: number, y: number, isUserRed: boolean) => {
+  const getZone = useCallback((x: number, y: number, isUserRed: boolean, isFlipped: boolean) => {
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50;
-    // Zona "Off" mucho más generosa en los laterales, pero priorizando la IZQUIERDA según feedback
-    if (x < xBase - 10 || x > xBase + 910) return { type: 'off' };
+    // Zona Bear-off (Off) - Más permisiva en los bordes para móviles
+    if (x < xBase - 40 || x > xBase + 940) return { type: 'off' };
     if (Math.abs(x - (xBase + 450)) < 80) return { type: 'bar' };
     for (let i = 0; i < 24; i++) {
-      const pos = getPos(i, isUserRed);
-      // Hitbox de 45px para facilitar el toque
-      if (Math.abs(x - pos.x) < 45) {
-        if (pos.isTop && y < CANVAS_HEIGHT/2) return { type: 'point', index: i };
-        if (!pos.isTop && y > CANVAS_HEIGHT/2) return { type: 'point', index: i };
+      const pos = getPos(i, isUserRed, isFlipped);
+      // Hitbox amplia (50px) para facilitar drag & drop en móviles y bordes
+      if (Math.abs(x - pos.x) < 50) {
+        if (pos.isTop && y < CANVAS_HEIGHT/2 + 50) return { type: 'point', index: i };
+        if (!pos.isTop && y > CANVAS_HEIGHT/2 - 50) return { type: 'point', index: i };
       }
     }
     return null;
   }, [getPos]);
 
   const getClampedCoords = (clientX: number, clientY: number) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
-    const rectAspect = rect.width / rect.height;
+    const rect = canvasRef.current?.getBoundingClientRect(); if (!rect) return { x: 0, y: 0 };
+    const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT; const rectAspect = rect.width / rect.height;
     let scale, ox, oy;
     if (rectAspect > canvasAspect) { scale = rect.height / CANVAS_HEIGHT; ox = (rect.width - CANVAS_WIDTH * scale) / 2; oy = 0; }
     else { scale = rect.width / CANVAS_WIDTH; ox = 0; oy = (rect.height - CANVAS_HEIGHT * scale) / 2; }
@@ -450,24 +401,24 @@ const App: React.FC = () => {
 
   const handlePointerDown = (clientX: number, clientY: number) => {
     if (isMenuOpen || stateRef.current.winner) return;
-    const s = stateRef.current;
-    if (!(s.gameMode === 'LOCAL' || s.turn === s.userColor)) return;
+    const s = stateRef.current; if (!(s.gameMode === 'LOCAL' || s.turn === s.userColor)) return;
     const { x, y } = getClampedCoords(clientX, clientY);
-    const zone = getZone(x, y, s.userColor === 'red');
+    const zone = getZone(x, y, s.userColor === 'red', s.isFlipped);
+    
     if (zone?.type === 'bar' && s.bar[s.turn] > 0) {
-      grabbedRef.current = { player: s.turn, fromIndex: -1, x, y, isMouse: true };
+      grabbedRef.current = { player: s.turn, fromIndex: -1, x, y, isMouse: true, offsetY: 0 };
       setState(p => ({ ...p, grabbed: grabbedRef.current }));
     } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) {
-      grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x, y, isMouse: true };
+      // OffsetY para que el dedo no tape la ficha en móviles
+      grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x, y, isMouse: true, offsetY: -30 };
       setState(p => ({ ...p, grabbed: grabbedRef.current }));
     }
   };
 
   const handlePointerUp = (clientX: number, clientY: number) => {
     if (!grabbedRef.current || !grabbedRef.current.isMouse) return;
-    const s = stateRef.current;
-    const { x, y } = getClampedCoords(clientX, clientY);
-    const tz = getZone(x, y, s.userColor === 'red');
+    const s = stateRef.current; const { x, y } = getClampedCoords(clientX, clientY);
+    const tz = getZone(x, y, s.userColor === 'red', s.isFlipped);
     if (tz) {
       const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
       if (to !== null) {
@@ -475,8 +426,7 @@ const App: React.FC = () => {
         if (possibleDice.length > 0) executeMove(grabbedRef.current!.fromIndex, to as any, possibleDice[0]);
       }
     }
-    grabbedRef.current = null;
-    setState(p => ({ ...p, grabbed: null }));
+    grabbedRef.current = null; setState(p => ({ ...p, grabbed: null }));
   };
 
   useEffect(() => {
@@ -484,8 +434,7 @@ const App: React.FC = () => {
     let anim: number;
     const draw = () => {
       const ctx = canvasRef.current?.getContext('2d'); if (!ctx) return;
-      const s = stateRef.current;
-      const isRed = s.userColor === 'red';
+      const s = stateRef.current; const isRed = s.userColor === 'red';
       
       if (rawHand.current.isDetected) {
         smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.5;
@@ -494,15 +443,12 @@ const App: React.FC = () => {
         const isPinchS = pinchBuffer.current.filter(b => b).length >= 3;
         const isRelS = pinchBuffer.current.filter(b => !b).length >= 3;
         if (isPinchS && !grabbedRef.current && (s.gameMode === 'LOCAL' || s.turn === s.userColor) && !s.winner && !s.isBlocked && !isMenuOpen) {
-          const zone = getZone(smoothHand.current.x, smoothHand.current.y, isRed);
-          if (zone?.type === 'bar' && s.bar[s.turn] > 0) { grabbedRef.current = { player: s.turn, fromIndex: -1, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false }; setState(p => ({ ...p, grabbed: grabbedRef.current })); }
-          else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) { grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false }; setState(p => ({ ...p, grabbed: grabbedRef.current })); }
+          const zone = getZone(smoothHand.current.x, smoothHand.current.y, isRed, s.isFlipped);
+          if (zone?.type === 'bar' && s.bar[s.turn] > 0) { grabbedRef.current = { player: s.turn, fromIndex: -1, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 }; setState(p => ({ ...p, grabbed: grabbedRef.current })); }
+          else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) { grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 }; setState(p => ({ ...p, grabbed: grabbedRef.current })); }
         } else if (isRelS && grabbedRef.current && !grabbedRef.current.isMouse) {
-          const tz = getZone(smoothHand.current.x, smoothHand.current.y, isRed);
-          if (tz) {
-            const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
-            if (to !== null) { const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d)); if (possibleDice.length > 0) executeMove(grabbedRef.current!.fromIndex, to as any, possibleDice[0]); }
-          }
+          const tz = getZone(smoothHand.current.x, smoothHand.current.y, isRed, s.isFlipped);
+          if (tz) { const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null); if (to !== null) { const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d)); if (possibleDice.length > 0) executeMove(grabbedRef.current!.fromIndex, to as any, possibleDice[0]); } }
           grabbedRef.current = null; setState(p => ({ ...p, grabbed: null }));
         }
       }
@@ -512,7 +458,7 @@ const App: React.FC = () => {
       ctx.save(); ctx.globalAlpha = s.boardOpacity; ctx.fillStyle = '#1c1917'; ctx.fillRect(xB, BOARD_PADDING, 900, CANVAS_HEIGHT - BOARD_PADDING * 2); ctx.restore();
 
       for (let i = 0; i < 24; i++) {
-        const pos = getPos(i, isRed);
+        const pos = getPos(i, isRed, s.isFlipped);
         const canM = (s.gameMode === 'LOCAL' || s.turn === s.userColor) && s.movesLeft.length > 0 && s.points[i].checkers.includes(s.turn);
         const isT = grabbedRef.current && s.movesLeft.some(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, i, d));
         ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.95)' : 'rgba(190, 160, 110, 0.8)';
@@ -532,17 +478,15 @@ const App: React.FC = () => {
       // --- PIEZAS ELIMINADAS (SIEMPRE A LA IZQUIERDA) ---
       const OFF_X = 80;
       for(let i=0; i<s.off.white; i++) {
-        const isBottom = !isRed; // Blancas están abajo para el host (isRed=false)
-        drawCh(ctx, OFF_X, isBottom ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'white');
+        const isBottom = !isRed; drawCh(ctx, OFF_X, isBottom ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'white');
       }
       for(let i=0; i<s.off.red; i++) {
-        const isBottom = isRed; // Rojas están abajo para el invitado (isRed=true)
-        drawCh(ctx, OFF_X, isBottom ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'red');
+        const isBottom = isRed; drawCh(ctx, OFF_X, isBottom ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'red');
       }
       
       if (s.dice.length > 0) s.dice.forEach((d, i) => drawD(ctx, xB + 450 + (i === 0 ? -180 : 180), CANVAS_HEIGHT/2, d, s.turn));
-      const dX = grabbedRef.current?.isMouse ? mousePos.current.x : smoothHand.current.x;
-      const dY = grabbedRef.current?.isMouse ? mousePos.current.y : smoothHand.current.y;
+      const dX = (grabbedRef.current?.isMouse ? mousePos.current.x : smoothHand.current.x);
+      const dY = (grabbedRef.current?.isMouse ? mousePos.current.y : smoothHand.current.y) + (grabbedRef.current?.offsetY || 0);
       if (grabbedRef.current) drawCh(ctx, dX, dY, grabbedRef.current.player, true);
       if (rawHand.current.isDetected) { ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 12 : 24, 0, Math.PI * 2); ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : 'white'; ctx.lineWidth = 4; ctx.stroke(); }
       anim = requestAnimationFrame(draw);
@@ -587,7 +531,7 @@ const App: React.FC = () => {
 
   const generateRoom = () => { const id = Math.random().toString(36).substring(2, 8).toUpperCase(); setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE', isHost: true, onlineOpponentConnected: false })); setView('INVITE_SENT'); };
   const copyInviteLink = () => navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`).then(() => { setCopyFeedback(true); setTimeout(() => setCopyFeedback(false), 2000); });
-  const exitGame = () => { if (handshakeInterval.current) clearInterval(handshakeInterval.current); if (connRef.current) try { connRef.current.close(); } catch(e) {} if (peerRef.current) try { peerRef.current.destroy(); } catch(e) {} clearRoomURL(); setHistory([]); setIsAiProcessing(false); setIsMenuOpen(false); grabbedRef.current = null; setState({ points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 }, turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, gameMode: 'LOCAL', userColor: 'white', roomID: '', isHost: true, boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false, onlineOpponentConnected: false }); setView('HOME'); };
+  const exitGame = () => { if (handshakeInterval.current) clearInterval(handshakeInterval.current); if (connRef.current) try { connRef.current.close(); } catch(e) {} if (peerRef.current) try { peerRef.current.destroy(); } catch(e) {} clearRoomURL(); setHistory([]); setIsAiProcessing(false); setIsMenuOpen(false); grabbedRef.current = null; setState({ points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 }, turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, gameMode: 'LOCAL', userColor: 'white', roomID: '', isHost: true, boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false, onlineOpponentConnected: false, isFlipped: false }); setView('HOME'); };
 
   return (
     <div className="w-full h-full bg-black relative flex flex-col overflow-hidden" 
@@ -611,7 +555,11 @@ const App: React.FC = () => {
         <>
           <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md safe-top"><button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(true); }} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner active:scale-95 transition-all"><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div></button><div className="flex gap-4 items-center">{((state.gameMode === 'LOCAL') || (state.turn === state.userColor)) && history.length > 0 && <button onClick={(e) => { e.stopPropagation(); undoMove(); }} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}<div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${(state.gameMode === 'LOCAL' || state.turn === state.userColor) ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>{state.gameMode === 'LOCAL' ? `TURNO: ${state.turn.toUpperCase()}` : (state.turn === state.userColor ? 'TU TURNO' : (state.gameMode === 'AI' ? 'IA PENSANDO...' : 'ESPERANDO...'))}</div><button onClick={(e) => { e.stopPropagation(); rollDice(); }} disabled={state.movesLeft.length > 0 || (state.gameMode !== 'LOCAL' && state.turn !== state.userColor) || !!state.winner} className={`bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all ${(state.movesLeft.length === 0 && (state.gameMode === 'LOCAL' || state.turn === state.userColor)) ? 'pulse-gold shadow-glow' : ''}`}>Lanzar</button></div></header>
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">{isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center"><div className="text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse mb-4">Iniciando AR...</div><button onClick={() => setIsARLoading(false)} className="text-[10px] text-white/30 hover:text-white underline uppercase">Omitir y jugar manual</button></div>}<video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted /><canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />{state.winner && <div className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-700"><ConfettiRain /><div className="text-center z-[210] p-12 bg-stone-900/40 border border-white/5 rounded-[4rem] shadow-4xl animate-in zoom-in duration-500 delay-200"><h2 className="text-3xl font-black text-yellow-600 uppercase tracking-widest mb-2 italic">¡Felicidades!</h2><h1 className="text-9xl font-black italic text-white uppercase mb-4 tracking-tighter">{state.winner === 'white' ? 'BLANCAS' : 'ROJAS'}</h1><p className="text-white/40 font-black uppercase tracking-widest text-xs mb-12 italic">Victoria</p><div className="flex flex-col gap-4 w-80 mx-auto"><button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); }} className="bg-yellow-600 text-black font-black py-6 rounded-3xl uppercase text-xl shadow-4xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button><button onClick={exitGame} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button></div></div></div>}</main>
-          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[300] border-r border-stone-800 transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col shadow-4xl backdrop-blur-3xl safe-top`}><div className="flex justify-between items-center mb-10 pb-6 border-b border-white/5"><h3 className="text-white font-black text-2xl uppercase italic tracking-tighter">OPCIONES</h3><button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(false); }} className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-600 text-white font-bold text-xl hover:bg-red-500 transition-colors shadow-lg">✕</button></div><div className="space-y-10 flex-1"><div className="space-y-4"><div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Tablero</span><span>{Math.round(state.boardOpacity * 100)}%</span></div><input type="range" min="0" max="1" step="0.01" value={state.boardOpacity} onChange={(e) => setState(s => ({...s, boardOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" /></div><div className="space-y-4"><div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Cámara</span><span>{Math.round(state.cameraOpacity * 100)}%</span></div><input type="range" min="0" max="1" step="0.01" value={state.cameraOpacity} onChange={(e) => setState(s => ({...s, cameraOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" /></div><div className="pt-10 flex flex-col gap-3"><button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); setIsMenuOpen(false); }} className="w-full bg-yellow-600/10 py-5 rounded-2xl text-yellow-600 font-black text-xs uppercase border border-yellow-600/20 hover:bg-yellow-600 hover:text-black transition-all">Reiniciar</button><button onClick={exitGame} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button></div></div></aside>
+          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[300] border-r border-stone-800 transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col shadow-4xl backdrop-blur-3xl safe-top`}><div className="flex justify-between items-center mb-10 pb-6 border-b border-white/5"><h3 className="text-white font-black text-2xl uppercase italic tracking-tighter">OPCIONES</h3><button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(false); }} className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-600 text-white font-bold text-xl hover:bg-red-500 transition-colors shadow-lg">✕</button></div><div className="space-y-10 flex-1"><div className="space-y-4"><div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Tablero</span><span>{Math.round(state.boardOpacity * 100)}%</span></div><input type="range" min="0" max="1" step="0.01" value={state.boardOpacity} onChange={(e) => setState(s => ({...s, boardOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" /></div><div className="space-y-4"><div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Cámara</span><span>{Math.round(state.cameraOpacity * 100)}%</span></div><input type="range" min="0" max="1" step="0.01" value={state.cameraOpacity} onChange={(e) => setState(s => ({...s, cameraOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" /></div><div className="pt-4 flex flex-col gap-3">
+                  <button onClick={(e) => { e.stopPropagation(); setState(s => { const next = {...s, isFlipped: !s.isFlipped}; broadcastState(next); return next; }); }} className="w-full bg-stone-800 py-4 rounded-2xl text-white font-black text-[10px] uppercase border border-white/5 hover:bg-stone-700 transition-all">Rotar Tablero</button>
+                  <button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); setIsMenuOpen(false); }} className="w-full bg-yellow-600/10 py-5 rounded-2xl text-yellow-600 font-black text-xs uppercase border border-yellow-600/20 hover:bg-yellow-600 hover:text-black transition-all">Reiniciar</button>
+                  <button onClick={exitGame} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
+                </div></div></aside>
         </>
       )}
     </div>
