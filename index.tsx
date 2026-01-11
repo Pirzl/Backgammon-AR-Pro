@@ -12,26 +12,11 @@ window.addEventListener('error', (e) => {
 }, true);
 
 // --- AUDIO ENGINE ---
-let audioCtx: AudioContext | null = null;
-const initAudio = () => {
-  if (audioCtx) {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    return;
-  }
-  try {
-    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-    if (AudioContext) audioCtx = new AudioContext();
-  } catch(e) { console.error('Web Audio API is not supported in this browser'); }
-};
-
 const playSound = (type: 'dice' | 'checker' | 'win') => {
-  if (!audioCtx) {
-    console.warn("AudioContext not initialized. Call initAudio() on a user gesture.");
-    return;
-  }
+  const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContext) return;
   try {
-    const ctx = audioCtx;
-    if (ctx.state === 'suspended') ctx.resume();
+    const ctx = new AudioContext();
     if (type === 'dice') {
       const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.1, ctx.sampleRate);
       const data = buffer.getChannelData(0);
@@ -188,7 +173,6 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<GameStateSnapshot[]>([]);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
-  const [isARStarted, setIsARStarted] = useState(false);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -196,7 +180,7 @@ const App: React.FC = () => {
   const smoothHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
   const pinchBuffer = useRef<boolean[]>([]);
   const grabbedRef = useRef<GrabbedInfo | null>(null);
-  const socket = useRef<WebSocket | null>(null);
+  const syncChannel = useRef<BroadcastChannel | null>(null);
 
   const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
@@ -220,64 +204,54 @@ const App: React.FC = () => {
 
   // --- MULTIJUGADOR SYNC ENGINE ---
   const broadcastState = useCallback((newState: Partial<GameState>) => {
-    if (socket.current?.readyState === WebSocket.OPEN && stateRef.current.gameMode === 'ONLINE') {
+    if (syncChannel.current && stateRef.current.gameMode === 'ONLINE') {
       const { grabbed, userColor, isHost, roomID, boardOpacity, cameraOpacity, onlineOpponentConnected, ...syncData } = newState as any;
-      const message = JSON.stringify({ type: 'STATE_SYNC', payload: syncData, room: stateRef.current.roomID });
-      socket.current.send(message);
+      syncChannel.current.postMessage({ type: 'STATE_SYNC', payload: syncData });
     }
   }, []);
 
   useEffect(() => {
-    if (state.roomID && state.gameMode === 'ONLINE') {
-      const ws = new WebSocket(`wss://socketsbay.com/wss/v2/1/demo/`);
-      socket.current = ws;
+    if (state.roomID) {
+      const channelName = `bgammon_room_${state.roomID}`;
+      const channel = new BroadcastChannel(channelName);
+      syncChannel.current = channel;
 
-      ws.onopen = () => {
-        // Use a small delay to ensure the server is ready to receive the message
-        setTimeout(() => {
-          if (!stateRef.current.isHost) {
-            ws.send(JSON.stringify({ type: 'HANDSHAKE', room: stateRef.current.roomID }));
-          }
-        }, 100);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const { type, payload, room } = JSON.parse(event.data);
-          if (room !== stateRef.current.roomID) return;
-
-          if (type === 'HANDSHAKE' && stateRef.current.isHost) {
+      channel.onmessage = (event) => {
+        const { type, payload } = event.data;
+        if (type === 'HANDSHAKE') {
+          if (stateRef.current.isHost) {
             setState(s => ({ ...s, onlineOpponentConnected: true }));
-            const ackPayload = { ...stateRef.current };
-            ws.send(JSON.stringify({ type: 'HANDSHAKE_ACK', payload: ackPayload, room: stateRef.current.roomID }));
-          } else if (type === 'HANDSHAKE_ACK' && !stateRef.current.isHost) {
-            setState(s => ({
-              ...payload,
-              onlineOpponentConnected: true,
-              isHost: false,
-              userColor: 'red',
-              boardOpacity: s.boardOpacity,
-              cameraOpacity: s.cameraOpacity,
-            }));
-            setView('PLAYING');
-          } else if (type === 'STATE_SYNC') {
-            setState(s => ({
-              ...s,
-              ...payload,
-              onlineOpponentConnected: true // Keep opponent as connected
-            }));
+            channel.postMessage({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
           }
-        } catch (error) {
-          console.error("Failed to parse WebSocket message:", error);
+        }
+        if (type === 'HANDSHAKE_ACK') {
+          setState(s => ({ 
+            ...payload, 
+            onlineOpponentConnected: true, 
+            isHost: false, 
+            userColor: 'red',
+            boardOpacity: s.boardOpacity,
+            cameraOpacity: s.cameraOpacity
+          }));
+          setView('PLAYING');
+        }
+        if (type === 'STATE_SYNC') {
+          setState(s => ({
+            ...s,
+            ...payload,
+            userColor: s.userColor, 
+            isHost: s.isHost,
+            roomID: s.roomID,
+            boardOpacity: s.boardOpacity,
+            cameraOpacity: s.cameraOpacity,
+            onlineOpponentConnected: true
+          }));
         }
       };
 
-      return () => {
-        ws.close();
-        socket.current = null;
-      };
+      return () => channel.close();
     }
-  }, [state.roomID, state.gameMode]);
+  }, [state.roomID]);
 
   // Auto-entry for host
   useEffect(() => {
@@ -312,7 +286,7 @@ const App: React.FC = () => {
   }, [broadcastState]);
 
   useEffect(() => {
-    if (view !== 'PLAYING' || !isARStarted) return;
+    if (view !== 'PLAYING') return;
     let mounted = true;
     const HandsClass = (window as any).Hands;
     const CameraClass = (window as any).Camera;
@@ -326,30 +300,9 @@ const App: React.FC = () => {
       rawHand.current = { x: (1 - l[8].x) * CANVAS_WIDTH, y: l[8].y * CANVAS_HEIGHT, isPinching: dist < PINCH_THRESHOLD, isDetected: true };
     });
     const camera = new CameraClass(videoRef.current, { onFrame: async () => { if (mounted) await hands.send({ image: videoRef.current! }); }, width: 1280, height: 720 });
-
-    const startAR = async () => {
-      try {
-        await camera.start();
-        if (mounted) setIsARLoading(false);
-      } catch (err) {
-        console.error("Camera access error:", err);
-        alert("No se pudo acceder a la cámara. Por favor, asegúrese de haber otorgado los permisos necesarios y que su cámara no esté siendo utilizada por otra aplicación.");
-        if (mounted) {
-          setIsARStarted(false);
-          setIsARLoading(true);
-        }
-      }
-    };
-    startAR();
-
-    return () => {
-      mounted = false;
-      camera.stop();
-      hands.close();
-      setIsARStarted(false);
-      setIsARLoading(true);
-    };
-  }, [view, isARStarted]);
+    camera.start().then(() => { if (mounted) setIsARLoading(false); });
+    return () => { mounted = false; camera.stop(); hands.close(); };
+  }, [view]);
 
   const rollDice = useCallback((forced: boolean = false) => {
     playSound('dice');
@@ -659,13 +612,10 @@ const App: React.FC = () => {
   };
 
   const acceptInvite = () => {
-    if (socket.current?.readyState === WebSocket.OPEN) {
-      socket.current.send(JSON.stringify({ type: 'HANDSHAKE', room: stateRef.current.roomID }));
+    if (syncChannel.current) {
+      syncChannel.current.postMessage({ type: 'HANDSHAKE' });
     }
-    // No longer necessary to setView here, HANDSHAKE_ACK will do it.
-    // setView('PLAYING');
-    // Instead, we can give some feedback:
-    setState(s => ({...s, isBlocked: true})); // using isBlocked to show a "connecting" state
+    setView('PLAYING');
   };
 
   return (
@@ -700,9 +650,9 @@ const App: React.FC = () => {
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center">
           <h1 className="text-9xl font-black italic text-white mb-10 tracking-tighter drop-shadow-2xl">B-GAMMON</h1>
           <div className="flex flex-col gap-4 w-64">
-            <button onClick={() => { initAudio(); resetGame('AI'); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl hover:bg-yellow-600 hover:text-white transition-all shadow-xl uppercase tracking-widest">Vs Máquina</button>
-            <button onClick={() => { initAudio(); setView('ONLINE_LOBBY'); }} className="bg-stone-800 text-white font-black py-4 rounded-xl hover:bg-stone-700 transition-all shadow-xl uppercase tracking-widest">Multijugador</button>
-            <button onClick={() => { initAudio(); resetGame('LOCAL'); setView('PLAYING'); }} className="bg-stone-900 text-white/50 font-black py-4 rounded-xl hover:text-white transition-all uppercase text-[10px]">Local (2 Players)</button>
+            <button onClick={() => { resetGame('AI'); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl hover:bg-yellow-600 hover:text-white transition-all shadow-xl uppercase tracking-widest">Vs Máquina</button>
+            <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl hover:bg-stone-700 transition-all shadow-xl uppercase tracking-widest">Multijugador</button>
+            <button onClick={() => { resetGame('LOCAL'); setView('PLAYING'); }} className="bg-stone-900 text-white/50 font-black py-4 rounded-xl hover:text-white transition-all uppercase text-[10px]">Local (2 Players)</button>
           </div>
         </div>
       )}
@@ -715,9 +665,7 @@ const App: React.FC = () => {
                 <div className="text-center space-y-6">
                   <p className="text-white/60 uppercase font-black text-xs tracking-widest">Has sido invitado a la sala</p>
                   <div className="text-5xl font-black text-yellow-600 bg-black/40 py-6 rounded-2xl border border-white/5">{state.roomID}</div>
-                  <button onClick={acceptInvite} disabled={state.isBlocked} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all pulse-gold disabled:opacity-50 disabled:animate-none">
-                    {state.isBlocked ? 'CONECTANDO...' : 'ACEPTAR RETO'}
-                  </button>
+                  <button onClick={acceptInvite} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all pulse-gold">Aceptar Reto</button>
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
@@ -794,17 +742,8 @@ const App: React.FC = () => {
           </header>
 
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
-            {!isARStarted && (
-              <div className="absolute inset-0 z-[150] bg-stone-950/90 flex flex-col items-center justify-center backdrop-blur-lg">
-                  <button onClick={() => setIsARStarted(true)} className="bg-yellow-600 text-black font-black py-4 px-10 rounded-2xl text-lg uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all animate-in fade-in zoom-in duration-500">
-                      Activar AR
-                  </button>
-                  <p className="text-white/40 text-xs font-bold uppercase tracking-widest mt-6">Se necesita acceso a la cámara</p>
-              </div>
-            )}
-
-            {isARStarted && isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse">Iniciando AR...</div>}
-            <video ref={videoRef} style={{ opacity: isARStarted ? state.cameraOpacity : 0 }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1] transition-opacity duration-500" autoPlay playsInline muted />
+            {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse">Iniciando AR...</div>}
+            <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted />
             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
             
             {state.winner && (
