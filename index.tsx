@@ -82,7 +82,7 @@ export interface GameState {
   cameraOpacity: number;
   isBlocked: boolean;
   onlineOpponentConnected: boolean;
-  isFlipped: boolean; // Para la función de rotación solicitada
+  isFlipped: boolean;
 }
 
 // --- CONSTANTS ---
@@ -216,7 +216,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- MULTIPLAYER P2P (PEERJS) ROBUSTO ---
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
         const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 6)}`;
@@ -366,7 +365,7 @@ const App: React.FC = () => {
 
   const getPos = useCallback((idx: number, isUserRed: boolean, isFlipped: boolean) => {
     let effectiveIdx = isUserRed ? 23 - idx : idx;
-    if (isFlipped) effectiveIdx = 23 - effectiveIdx; // Función rotar/flip solicitada
+    if (isFlipped) effectiveIdx = 23 - effectiveIdx; 
     const isTop = effectiveIdx >= 12;
     const relIdx = isTop ? 23 - effectiveIdx : effectiveIdx;
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50; 
@@ -376,17 +375,25 @@ const App: React.FC = () => {
 
   const getZone = useCallback((x: number, y: number, isUserRed: boolean, isFlipped: boolean) => {
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50;
-    // Zona Bear-off (Off) - Más permisiva en los bordes para móviles
-    if (x < xBase - 40 || x > xBase + 940) return { type: 'off' };
-    if (Math.abs(x - (xBase + 450)) < 80) return { type: 'bar' };
+    
+    // PRIORIDAD 1: Puntos internos (6, 7, 18, 19) y todos los demás puntos
+    // Se revisan antes que la barra para evitar colisiones en los bordes internos
     for (let i = 0; i < 24; i++) {
       const pos = getPos(i, isUserRed, isFlipped);
-      // Hitbox amplia (50px) para facilitar drag & drop en móviles y bordes
-      if (Math.abs(x - pos.x) < 50) {
-        if (pos.isTop && y < CANVAS_HEIGHT/2 + 50) return { type: 'point', index: i };
-        if (!pos.isTop && y > CANVAS_HEIGHT/2 - 50) return { type: 'point', index: i };
+      // Hitbox optimizado: 35px de ancho (un punto completo) + margen de error de 5px
+      if (Math.abs(x - pos.x) < 40) {
+        // Hitbox vertical amplio para facilitar el soltado en tablets/móviles
+        if (pos.isTop && y < CANVAS_HEIGHT/2 + 80) return { type: 'point', index: i };
+        if (!pos.isTop && y > CANVAS_HEIGHT/2 - 80) return { type: 'point', index: i };
       }
     }
+    
+    // PRIORIDAD 2: Barra central (hitbox reducido para no pisar puntos 5, 6, 17, 18)
+    if (Math.abs(x - (xBase + 450)) < 40) return { type: 'bar' };
+    
+    // PRIORIDAD 3: Bear-off (Retirada de fichas) - Siempre a la izquierda o margen exterior
+    if (x < xBase - 10 || x > xBase + 910) return { type: 'off' };
+    
     return null;
   }, [getPos]);
 
@@ -409,8 +416,8 @@ const App: React.FC = () => {
       grabbedRef.current = { player: s.turn, fromIndex: -1, x, y, isMouse: true, offsetY: 0 };
       setState(p => ({ ...p, grabbed: grabbedRef.current }));
     } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) {
-      // OffsetY para que el dedo no tape la ficha en móviles
-      grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x, y, isMouse: true, offsetY: -30 };
+      // OffsetY mejorado: la ficha "flota" ligeramente sobre el dedo en pantallas táctiles
+      grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x, y, isMouse: true, offsetY: -40 };
       setState(p => ({ ...p, grabbed: grabbedRef.current }));
     }
   };
@@ -475,7 +482,6 @@ const App: React.FC = () => {
         for(let i=0; i<c; i++) { if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === c - 1) continue; drawCh(ctx, xB + 450, vY + (p === (isRed ? 'red' : 'white') ? -i*42 : i*42), p as Player, false, canMB && i === c - 1); }
       });
 
-      // --- PIEZAS ELIMINADAS (SIEMPRE A LA IZQUIERDA) ---
       const OFF_X = 80;
       for(let i=0; i<s.off.white; i++) {
         const isBottom = !isRed; drawCh(ctx, OFF_X, isBottom ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'white');
