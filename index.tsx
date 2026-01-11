@@ -2,13 +2,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
-// --- SILENCIADOR DE ERRORES ---
+// --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
 window.addEventListener('error', (e) => {
-  if (e.message.includes('WebSocket') || e.message.includes('message channel closed') || e.message.includes('favicon.ico')) {
+  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js'];
+  if (ignored.some(msg => e.message?.includes(msg))) {
     e.stopImmediatePropagation();
     return false;
   }
-});
+}, true);
 
 // --- AUDIO ENGINE ---
 const playSound = (type: 'dice' | 'checker' | 'win') => {
@@ -192,31 +193,30 @@ const App: React.FC = () => {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  // --- MULTIJUGADOR SYNC ENGINE ---
+  // --- MULTIJUGADOR SYNC ENGINE (JULIE REFACTORED) ---
   const broadcastState = useCallback((newState: Partial<GameState>) => {
-    if (syncChannel.current) {
+    if (syncChannel.current && stateRef.current.gameMode === 'ONLINE') {
       syncChannel.current.postMessage({ type: 'STATE_SYNC', payload: newState });
     }
   }, []);
 
   useEffect(() => {
     if (state.roomID) {
-      const channel = new BroadcastChannel(`bgammon_room_${state.roomID}`);
+      const channelName = `bgammon_room_${state.roomID}`;
+      const channel = new BroadcastChannel(channelName);
       syncChannel.current = channel;
 
       channel.onmessage = (event) => {
         const { type, payload } = event.data;
         if (type === 'HANDSHAKE') {
-          // Si somos el host y recibimos un handshake, marcamos como conectado y enviamos nuestro estado actual
           if (stateRef.current.isHost) {
             setState(s => ({ ...s, onlineOpponentConnected: true }));
             channel.postMessage({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
           }
         }
         if (type === 'HANDSHAKE_ACK') {
-          // Si somos el invitado y recibimos el ACK, sincronizamos todo el tablero
-          setState(payload);
-          setState(s => ({ ...s, onlineOpponentConnected: true, isHost: false, userColor: 'red' }));
+          setState({ ...payload, onlineOpponentConnected: true, isHost: false, userColor: 'red' });
+          setView('PLAYING'); // Invitado entra directo al juego tras handshake
         }
         if (type === 'STATE_SYNC') {
           setState(s => ({ ...s, ...payload }));
@@ -226,6 +226,13 @@ const App: React.FC = () => {
       return () => channel.close();
     }
   }, [state.roomID]);
+
+  // Auto-Start para el Host cuando el rival se conecta
+  useEffect(() => {
+    if (state.isHost && state.onlineOpponentConnected && view === 'INVITE_SENT') {
+      setTimeout(() => setView('PLAYING'), 1000);
+    }
+  }, [state.onlineOpponentConnected, view, state.isHost]);
 
   // Deep Linking Check
   useEffect(() => {
@@ -249,7 +256,7 @@ const App: React.FC = () => {
       turn: 'white', dice: [], movesLeft: [], grabbed: null, winner: null, gameMode: mode, isBlocked: false
     };
     setState(newState);
-    if (mode === 'ONLINE') broadcastState(newState);
+    broadcastState(newState);
   }, [broadcastState]);
 
   useEffect(() => {
@@ -282,7 +289,7 @@ const App: React.FC = () => {
       const nextS = { ...s, dice: [d1, d2], movesLeft: moves };
       const isBlocked = !hasAnyLegalMove(nextS as any) && !s.winner;
       const result = { ...nextS, isBlocked };
-      if (s.gameMode === 'ONLINE') broadcastState(result);
+      broadcastState(result);
       return result;
     });
   }, [broadcastState]);
@@ -292,7 +299,7 @@ const App: React.FC = () => {
     setIsAiProcessing(false);
     setState(s => {
       const result = { ...s, turn: (s.turn === 'white' ? 'red' : 'white') as Player, dice: [], movesLeft: [], isBlocked: false };
-      if (s.gameMode === 'ONLINE') broadcastState(result);
+      broadcastState(result);
       return result;
     });
   }, [broadcastState]);
@@ -303,7 +310,7 @@ const App: React.FC = () => {
     setHistory(h => h.slice(0, -1));
     setState(s => {
       const result = { ...s, ...last, isBlocked: false };
-      if (s.gameMode === 'ONLINE') broadcastState(result);
+      broadcastState(result);
       return result;
     });
   };
@@ -332,9 +339,15 @@ const App: React.FC = () => {
       if (ns.winner) { ns.isBlocked = false; ns.movesLeft = []; }
       else {
         if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
-        else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); }
+        else if (ns.movesLeft.length === 0) { 
+          ns.turn = ns.turn === 'white' ? 'red' : 'white'; 
+          ns.dice = []; 
+          ns.movesLeft = []; 
+          ns.isBlocked = false; 
+          setHistory([]); 
+        }
       }
-      if (ns.gameMode === 'ONLINE') broadcastState(ns);
+      broadcastState(ns);
       return ns;
     });
   };
@@ -668,7 +681,7 @@ const App: React.FC = () => {
                  {state.onlineOpponentConnected ? (
                    <div className="animate-in fade-in duration-500 scale-110">
                       <div className="text-green-500 font-black uppercase tracking-widest text-sm mb-4">¡RIVAL CONECTADO!</div>
-                      <button onClick={() => setView('PLAYING')} className="bg-yellow-600 text-black font-black px-12 py-4 rounded-full uppercase shadow-glow pulse-gold">EMPEZAR PARTIDA</button>
+                      <div className="text-white/40 text-[9px] font-bold animate-pulse uppercase">Iniciando tablero...</div>
                    </div>
                  ) : (
                    <div className="flex items-center gap-3 text-white/20 animate-pulse">
@@ -676,7 +689,6 @@ const App: React.FC = () => {
                      <span className="text-[10px] font-black uppercase tracking-widest">Esperando que el rival se una...</span>
                    </div>
                  )}
-                 {!state.onlineOpponentConnected && <button onClick={() => setView('PLAYING')} className="mt-6 w-full bg-white/5 text-white/60 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all text-[10px] tracking-widest">Empezar sin esperar (Local)</button>}
               </div>
            </div>
            <button onClick={() => { setView('HOME'); setState(s => ({ ...s, roomID: '' })); }} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
