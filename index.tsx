@@ -4,8 +4,8 @@ import ReactDOM from 'react-dom/client';
 
 // --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
 window.addEventListener('error', (e) => {
-  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError', 'NotAllowedError', 'AbortError'];
-  if (ignored.some(msg => e.message?.includes(msg))) {
+  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError', 'NotAllowedError', 'AbortError', 'NS_ERROR_CORRUPTED_CONTENT'];
+  if (ignored.some(msg => (e.message || '').includes(msg))) {
     e.stopImmediatePropagation();
     return false;
   }
@@ -173,6 +173,7 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<GameStateSnapshot[]>([]);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -209,17 +210,16 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- REAL MULTIPLAYER (PEERJS) ---
+  // --- MULTIPLAYER CORE (PEERJS) ---
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
         const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substr(2, 4)}`;
         const peer = new (window as any).Peer(peerID);
         peerRef.current = peer;
 
-        peer.on('open', (id: string) => {
-            console.log('Peer ID is: ' + id);
+        peer.on('open', () => {
             if (!state.isHost) {
-                const conn = peer.connect(`bgammon-${state.roomID}-host`);
+                const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
                 setupConnection(conn);
             }
         });
@@ -239,27 +239,19 @@ const App: React.FC = () => {
             conn.on('data', (data: any) => {
                 const { type, payload } = data;
                 if (type === 'HANDSHAKE_ACK') {
-                    setState(s => ({ 
-                      ...payload, 
-                      onlineOpponentConnected: true, 
-                      isHost: false, 
-                      userColor: 'red'
-                    }));
+                    setState(s => ({ ...payload, onlineOpponentConnected: true, isHost: false, userColor: 'red' }));
                     setView('PLAYING');
                 }
                 if (type === 'STATE_SYNC') {
                     setState(s => ({
-                      ...s,
-                      ...payload,
-                      userColor: s.userColor, 
-                      isHost: s.isHost,
-                      roomID: s.roomID,
-                      boardOpacity: s.boardOpacity,
-                      cameraOpacity: s.cameraOpacity,
+                      ...s, ...payload,
+                      userColor: s.userColor, isHost: s.isHost, roomID: s.roomID,
+                      boardOpacity: s.boardOpacity, cameraOpacity: s.cameraOpacity,
                       onlineOpponentConnected: true
                     }));
                 }
             });
+            conn.on('close', () => { setState(s => ({ ...s, onlineOpponentConnected: false })); });
         };
 
         return () => { peer.destroy(); };
@@ -296,6 +288,7 @@ const App: React.FC = () => {
     broadcastState(newState);
   }, [broadcastState]);
 
+  // --- CAMERA & AR LOGIC ---
   useEffect(() => {
     if (view !== 'PLAYING') return;
     let mounted = true;
@@ -321,22 +314,23 @@ const App: React.FC = () => {
       try {
         cameraInstance = new CameraClass(videoRef.current, { 
           onFrame: async () => { 
-            if (mounted && videoRef.current) {
-                try { await hands.send({ image: videoRef.current }); } catch(e) {}
-            }
+            if (mounted && videoRef.current) { try { await hands.send({ image: videoRef.current }); } catch(e) {} }
           }, 
           width: 1280, height: 720 
         });
         await cameraInstance.start();
-      } catch (err) {
-        console.warn("Camera failed to start:", err);
+      } catch (err: any) {
+        if (err.name === 'NotReadableError' || err.name === 'AbortError') {
+            setCameraError("La cámara está siendo usada por otro proceso.");
+        } else {
+            console.warn("Camera init error:", err);
+        }
       } finally {
         if (mounted) setIsARLoading(false);
       }
     };
 
     initAR();
-
     return () => { 
         mounted = false; 
         if (cameraInstance) try { cameraInstance.stop(); } catch(e) {}
@@ -405,11 +399,7 @@ const App: React.FC = () => {
       else {
         if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
         else if (ns.movesLeft.length === 0) { 
-          ns.turn = ns.turn === 'white' ? 'red' : 'white'; 
-          ns.dice = []; 
-          ns.movesLeft = []; 
-          ns.isBlocked = false; 
-          setHistory([]); 
+          ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); 
         }
       }
       broadcastState(ns);
@@ -446,19 +436,9 @@ const App: React.FC = () => {
     const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
     const rectAspect = rect.width / rect.height;
     let scale, ox, oy;
-    if (rectAspect > canvasAspect) {
-        scale = rect.height / CANVAS_HEIGHT;
-        ox = (rect.width - CANVAS_WIDTH * scale) / 2;
-        oy = 0;
-    } else {
-        scale = rect.width / CANVAS_WIDTH;
-        ox = 0;
-        oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
-    }
-    return {
-      x: (clientX - rect.left - ox) / scale,
-      y: (clientY - rect.top - oy) / scale
-    };
+    if (rectAspect > canvasAspect) { scale = rect.height / CANVAS_HEIGHT; ox = (rect.width - CANVAS_WIDTH * scale) / 2; oy = 0; }
+    else { scale = rect.width / CANVAS_WIDTH; ox = 0; oy = (rect.height - CANVAS_HEIGHT * scale) / 2; }
+    return { x: (clientX - rect.left - ox) / scale, y: (clientY - rect.top - oy) / scale };
   };
 
   const handlePointerDown = (clientX: number, clientY: number) => {
@@ -590,6 +570,7 @@ const App: React.FC = () => {
     points.forEach((pt: number[]) => { ctx.beginPath(); ctx.arc(x + pt[0], y + pt[1], 7, 0, Math.PI * 2); ctx.fill(); }); ctx.restore();
   };
 
+  // IA Logic
   useEffect(() => {
     if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING' && !isAiProcessing) {
       setIsAiProcessing(true);
@@ -645,17 +626,20 @@ const App: React.FC = () => {
     <div className="w-full h-full bg-black relative flex flex-col overflow-hidden" 
          onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY)}
          onMouseUp={(e) => handlePointerUp(e.clientX, e.clientY)}
-         onMouseMove={(e) => {
-            const coords = getClampedCoords(e.clientX, e.clientY);
-            mousePos.current = coords;
-         }}
-         onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
-         onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}
-         onTouchMove={(e) => {
-            const coords = getClampedCoords(e.touches[0].clientX, e.touches[0].clientY);
-            mousePos.current = coords;
-         }}>
+         onMouseMove={(e) => { mousePos.current = getClampedCoords(e.clientX, e.clientY); }}
+         onTouchStart={(e) => { handlePointerDown(e.touches[0].clientX, e.touches[0].clientY); }}
+         onTouchEnd={(e) => { handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY); }}
+         onTouchMove={(e) => { mousePos.current = getClampedCoords(e.touches[0].clientX, e.touches[0].clientY); }}>
       
+      {cameraError && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[1000] w-full max-w-sm px-4 pointer-events-none">
+           <div className="bg-red-900/90 border border-red-500 p-4 rounded-2xl text-center shadow-4xl backdrop-blur-md animate-in fade-in duration-300 pointer-events-auto">
+              <p className="text-white text-[10px] font-black uppercase tracking-widest">{cameraError}</p>
+              <button onClick={() => setCameraError(null)} className="mt-2 text-white/50 text-[9px] underline uppercase">Entendido</button>
+           </div>
+        </div>
+      )}
+
       {state.isBlocked && !state.winner && (
         <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[900] w-full max-w-lg px-4 pointer-events-none">
            <div className="bg-stone-900/80 border border-yellow-600/50 p-6 rounded-3xl text-center shadow-4xl backdrop-blur-md animate-in slide-in-from-top duration-500 pointer-events-auto flex items-center justify-between">
@@ -746,7 +730,7 @@ const App: React.FC = () => {
 
       {view === 'PLAYING' && (
         <>
-          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md">
+          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md safe-top">
             <button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(true); }} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner active:scale-95 transition-all">
               <div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div>
             </button>
@@ -784,7 +768,7 @@ const App: React.FC = () => {
               </div>
             )}
           </main>
-          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[300] border-r border-stone-800 transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col shadow-4xl backdrop-blur-3xl`}>
+          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[300] border-r border-stone-800 transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col shadow-4xl backdrop-blur-3xl safe-top`}>
              <div className="flex justify-between items-center mb-10 pb-6 border-b border-white/5">
                 <h3 className="text-white font-black text-2xl uppercase italic tracking-tighter">OPCIONES</h3>
                 <button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(false); }} className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-600 text-white font-bold text-xl hover:bg-red-500 transition-colors shadow-lg">✕</button>

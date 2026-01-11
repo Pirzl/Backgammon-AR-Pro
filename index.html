@@ -7,16 +7,26 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Backgammon AR Pro | Online</title>
+    
+    <!-- Script de emergencia para limpiar Service Workers corruptos -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(registrations => {
+          for (let registration of registrations) { registration.unregister(); }
+        });
+      }
+    </script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
     
-    <!-- MediaPipe Scripts -->
+    <!-- MediaPipe Scripts con fallback de carga -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     
-    <!-- PeerJS for real multiplayer across networks -->
+    <!-- PeerJS para multijugador entre redes reales -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 
     <style>
@@ -31,6 +41,7 @@
             overflow: hidden;
             -webkit-tap-highlight-color: transparent;
             user-select: none;
+            touch-action: none;
         }
         
         @keyframes confetti-fall {
@@ -53,17 +64,21 @@
         .pulse-gold { animation: pulse-gold 2s infinite; }
         .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
 
-        /* Prevent Safari from showing the "blue" selection highlight on canvas */
         canvas { outline: none; }
+        
+        /* Ajuste para Notch en iOS */
+        .safe-top { padding-top: env(safe-area-inset-top); }
+        .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
     </style>
+
 <script type="importmap">
 {
   "imports": {
     "react": "https://esm.sh/react@19.0.0",
     "react-dom": "https://esm.sh/react-dom@19.0.0",
     "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
 </script>
