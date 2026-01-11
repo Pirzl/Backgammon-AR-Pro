@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 // --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
 window.addEventListener('error', (e) => {
-  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError', 'NotAllowedError'];
+  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError', 'NotAllowedError', 'AbortError'];
   if (ignored.some(msg => e.message?.includes(msg))) {
     e.stopImmediatePropagation();
     return false;
@@ -180,7 +180,8 @@ const App: React.FC = () => {
   const smoothHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
   const pinchBuffer = useRef<boolean[]>([]);
   const grabbedRef = useRef<GrabbedInfo | null>(null);
-  const syncChannel = useRef<BroadcastChannel | null>(null);
+  const peerRef = useRef<any>(null);
+  const connRef = useRef<any>(null);
 
   const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
@@ -202,54 +203,68 @@ const App: React.FC = () => {
   }, []);
 
   const broadcastState = useCallback((newState: Partial<GameState>) => {
-    if (syncChannel.current && stateRef.current.gameMode === 'ONLINE') {
-      const { grabbed, ...syncData } = newState as any;
-      syncChannel.current.postMessage({ type: 'STATE_SYNC', payload: syncData });
+    if (connRef.current && stateRef.current.gameMode === 'ONLINE') {
+        const { grabbed, ...syncData } = newState as any;
+        connRef.current.send({ type: 'STATE_SYNC', payload: syncData });
     }
   }, []);
 
+  // --- REAL MULTIPLAYER (PEERJS) ---
   useEffect(() => {
-    if (state.roomID) {
-      const channelName = `bgammon_room_${state.roomID}`;
-      const channel = new BroadcastChannel(channelName);
-      syncChannel.current = channel;
+    if (state.roomID && state.gameMode === 'ONLINE') {
+        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substr(2, 4)}`;
+        const peer = new (window as any).Peer(peerID);
+        peerRef.current = peer;
 
-      channel.onmessage = (event) => {
-        const { type, payload } = event.data;
-        if (type === 'HANDSHAKE') {
-          if (stateRef.current.isHost) {
-            setState(s => ({ ...s, onlineOpponentConnected: true }));
-            channel.postMessage({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
-          }
-        }
-        if (type === 'HANDSHAKE_ACK') {
-          setState(s => ({ 
-            ...payload, 
-            onlineOpponentConnected: true, 
-            isHost: false, 
-            userColor: 'red',
-            boardOpacity: s.boardOpacity,
-            cameraOpacity: s.cameraOpacity
-          }));
-          setView('PLAYING');
-        }
-        if (type === 'STATE_SYNC') {
-          setState(s => ({
-            ...s,
-            ...payload,
-            userColor: s.userColor, 
-            isHost: s.isHost,
-            roomID: s.roomID,
-            boardOpacity: s.boardOpacity,
-            cameraOpacity: s.cameraOpacity,
-            onlineOpponentConnected: true
-          }));
-        }
-      };
+        peer.on('open', (id: string) => {
+            console.log('Peer ID is: ' + id);
+            if (!state.isHost) {
+                const conn = peer.connect(`bgammon-${state.roomID}-host`);
+                setupConnection(conn);
+            }
+        });
 
-      return () => channel.close();
+        peer.on('connection', (conn: any) => {
+            if (stateRef.current.isHost) {
+                setupConnection(conn);
+                conn.on('open', () => {
+                   setState(s => ({ ...s, onlineOpponentConnected: true }));
+                   conn.send({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
+                });
+            }
+        });
+
+        const setupConnection = (conn: any) => {
+            connRef.current = conn;
+            conn.on('data', (data: any) => {
+                const { type, payload } = data;
+                if (type === 'HANDSHAKE_ACK') {
+                    setState(s => ({ 
+                      ...payload, 
+                      onlineOpponentConnected: true, 
+                      isHost: false, 
+                      userColor: 'red'
+                    }));
+                    setView('PLAYING');
+                }
+                if (type === 'STATE_SYNC') {
+                    setState(s => ({
+                      ...s,
+                      ...payload,
+                      userColor: s.userColor, 
+                      isHost: s.isHost,
+                      roomID: s.roomID,
+                      boardOpacity: s.boardOpacity,
+                      cameraOpacity: s.cameraOpacity,
+                      onlineOpponentConnected: true
+                    }));
+                }
+            });
+        };
+
+        return () => { peer.destroy(); };
     }
-  }, [state.roomID]);
+  }, [state.roomID, state.gameMode]);
 
   useEffect(() => {
     if (state.isHost && state.onlineOpponentConnected && view === 'INVITE_SENT') {
@@ -623,7 +638,6 @@ const App: React.FC = () => {
   };
 
   const acceptInvite = () => {
-    if (syncChannel.current) syncChannel.current.postMessage({ type: 'HANDSHAKE' });
     setView('PLAYING');
   };
 
@@ -636,7 +650,11 @@ const App: React.FC = () => {
             mousePos.current = coords;
          }}
          onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
-         onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
+         onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}
+         onTouchMove={(e) => {
+            const coords = getClampedCoords(e.touches[0].clientX, e.touches[0].clientY);
+            mousePos.current = coords;
+         }}>
       
       {state.isBlocked && !state.winner && (
         <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[900] w-full max-w-lg px-4 pointer-events-none">
@@ -741,7 +759,12 @@ const App: React.FC = () => {
             </div>
           </header>
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
-            {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse">Iniciando AR...</div>}
+            {isARLoading && (
+                <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center">
+                    <div className="text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse mb-4">Iniciando AR...</div>
+                    <button onClick={() => setIsARLoading(false)} className="text-[10px] text-white/30 hover:text-white underline uppercase">Omitir y jugar manual</button>
+                </div>
+            )}
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted />
             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
             {state.winner && (
