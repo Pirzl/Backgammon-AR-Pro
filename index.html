@@ -6,13 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Backgammon AR Pro</title>
+    <title>Backgammon AR Pro | Online</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
     
-    <!-- Real-time Sync -->
+    <!-- Real-time Sync (Socket.io) -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     
     <!-- MediaPipe Scripts -->
@@ -57,7 +57,6 @@
             z-index: 10;
         }
 
-        /* Animación de Confetti */
         @keyframes confetti-fall {
             0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
             100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
@@ -66,28 +65,28 @@
             position: absolute;
             width: 10px;
             height: 10px;
-            background: #fbbf24;
             top: -10px;
             z-index: 150;
             animation: confetti-fall 4s linear infinite;
         }
 
-        ::-webkit-scrollbar {
-            width: 4px;
+        @keyframes pulse-gold {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4); }
+            50% { box-shadow: 0 0 20px 10px rgba(251, 191, 36, 0); }
         }
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255,255,255,0.1);
-            border-radius: 10px;
-        }
+        .pulse-gold { animation: pulse-gold 2s infinite; }
+
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
     </style>
 <script type="importmap">
 {
   "imports": {
+    "react": "https://esm.sh/react@19.0.0",
+    "react-dom": "https://esm.sh/react-dom@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
     "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
   }
 }
@@ -95,6 +94,6 @@
 </head>
 <body>
     <div id="root"></div>
-    <script type="module" src="index.tsx"></script>
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>

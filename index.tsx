@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
-// --- SILENCIADOR DE ERRORES DE RED ---
+// --- SILENCIADOR DE ERRORES ---
 window.addEventListener('error', (e) => {
   if (e.message.includes('WebSocket') || e.message.includes('message channel closed')) {
     e.stopImmediatePropagation();
@@ -50,7 +50,7 @@ const playSound = (type: 'dice' | 'checker' | 'win') => {
 
 // --- TYPES ---
 export type Player = 'white' | 'red';
-export type View = 'HOME' | 'ONLINE_LOBBY' | 'PLAYING';
+export type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING';
 export type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
 export interface Point { checkers: Player[]; }
 export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; }
@@ -75,6 +75,7 @@ export interface GameState {
   boardOpacity: number;
   cameraOpacity: number;
   isBlocked: boolean;
+  onlineOpponentConnected: boolean;
 }
 
 // --- CONSTANTS ---
@@ -129,7 +130,8 @@ const isValidMove = (state: GameState, player: Player, from: number, to: number 
 const hasAnyLegalMove = (state: GameState): boolean => {
   if (state.movesLeft.length === 0) return true;
   const p = state.turn;
-  const diceUniq = Array.from(new Set(state.movesLeft));
+  // Fix: Explicitly providing Type Parameter to Set to avoid unknown[] inference during Array.from
+  const diceUniq = Array.from(new Set<number>(state.movesLeft));
   if (state.bar[p] > 0) return diceUniq.some(die => isValidMove(state, p, -1, getTargetPoint(p, -1, die), die));
   for (let i = 0; i < 24; i++) {
     if (state.points[i].checkers.includes(p)) {
@@ -147,16 +149,17 @@ const hasAnyLegalMove = (state: GameState): boolean => {
 const ConfettiRain: React.FC = () => {
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden z-[140]">
-      {Array.from({ length: 50 }).map((_, i) => (
+      {Array.from({ length: 60 }).map((_, i) => (
         <div 
           key={i} 
           className="confetti" 
           style={{ 
             left: `${Math.random() * 100}%`, 
-            animationDelay: `${Math.random() * 4}s`,
-            backgroundColor: i % 2 === 0 ? '#fbbf24' : '#ffffff',
-            width: `${Math.random() * 10 + 5}px`,
-            height: `${Math.random() * 10 + 5}px`
+            animationDelay: `${Math.random() * 5}s`,
+            animationDuration: `${3 + Math.random() * 2}s`,
+            backgroundColor: i % 3 === 0 ? '#fbbf24' : (i % 3 === 1 ? '#ffffff' : '#f59e0b'),
+            width: `${Math.random() * 12 + 6}px`,
+            height: `${Math.random() * 8 + 4}px`
           }} 
         />
       ))}
@@ -169,6 +172,7 @@ const App: React.FC = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [history, setHistory] = useState<GameStateSnapshot[]>([]);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState(false);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -181,11 +185,22 @@ const App: React.FC = () => {
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
     turn: 'white', dice: [], movesLeft: [], grabbed: null,
     winner: null, gameMode: 'LOCAL', userColor: 'white',
-    roomID: '', boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false
+    roomID: '', boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false,
+    onlineOpponentConnected: false
   });
 
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
+
+  // Deep Linking Check
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const room = params.get('room');
+    if (room && view === 'HOME') {
+      setState(s => ({ ...s, roomID: room, userColor: 'red', gameMode: 'ONLINE' }));
+      setView('ONLINE_LOBBY');
+    }
+  }, []);
 
   const [isARLoading, setIsARLoading] = useState(true);
   const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
@@ -263,7 +278,6 @@ const App: React.FC = () => {
       }
       ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
       
-      // Victoria check
       if (ns.off.white === 15) { ns.winner = 'white'; playSound('win'); }
       else if (ns.off.red === 15) { ns.winner = 'red'; playSound('win'); }
 
@@ -274,7 +288,6 @@ const App: React.FC = () => {
         if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
         else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); }
       }
-      
       return ns;
     });
   };
@@ -294,7 +307,7 @@ const App: React.FC = () => {
     if (Math.abs(x - (xBase + 450)) < 60) return { type: 'bar' };
     for (let i = 0; i < 24; i++) {
       const pos = getPos(i, reversed);
-      if (Math.abs(x - pos.x) < 50) {
+      if (Math.abs(x - pos.x) < 55) {
         if (pos.isTop && y < CANVAS_HEIGHT/2) return { type: 'point', index: i };
         if (!pos.isTop && y > CANVAS_HEIGHT/2) return { type: 'point', index: i };
       }
@@ -303,7 +316,7 @@ const App: React.FC = () => {
   }, [getPos]);
 
   const handlePointerDown = (clientX: number, clientY: number) => {
-    if (isMenuOpen || stateRef.current.winner || stateRef.current.isBlocked) return;
+    if (isMenuOpen || stateRef.current.winner) return;
     const s = stateRef.current;
     if (s.turn !== s.userColor) return;
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -392,16 +405,24 @@ const App: React.FC = () => {
 
       for (let i = 0; i < 24; i++) {
         const pos = getPos(i, rev);
-        const isT = grabbedRef.current && s.movesLeft.some(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, i, d));
+        const canMoveThisPoint = s.turn === s.userColor && s.movesLeft.length > 0 && s.points[i].checkers.includes(s.turn);
+        const isTarget = grabbedRef.current && s.movesLeft.some(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, i, d));
         ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.95)' : 'rgba(190, 160, 110, 0.8)';
-        if (isT) ctx.fillStyle = 'rgba(251, 191, 36, 0.5)';
+        if (isTarget) ctx.fillStyle = 'rgba(251, 191, 36, 0.5)';
         ctx.beginPath(); ctx.moveTo(pos.x - 35, pos.y); ctx.lineTo(pos.x + 35, pos.y); ctx.lineTo(pos.x, pos.isTop ? pos.y + 280 : pos.y - 280); ctx.fill();
-        s.points[i].checkers.forEach((p, idx) => { if (grabbedRef.current?.fromIndex === i && idx === s.points[i].checkers.length - 1) return; drawCh(ctx, pos.x, pos.isTop ? pos.y + 42 + idx * 42 : pos.y - 42 - idx * 42, p); });
+        s.points[i].checkers.forEach((p, idx) => { 
+          if (grabbedRef.current?.fromIndex === i && idx === s.points[i].checkers.length - 1) return; 
+          drawCh(ctx, pos.x, pos.isTop ? pos.y + 42 + idx * 42 : pos.y - 42 - idx * 42, p, false, canMoveThisPoint && idx === s.points[i].checkers.length - 1); 
+        });
       }
       ctx.fillStyle = '#0a0a0a'; ctx.fillRect(xB + 450 - 32, BOARD_PADDING, 64, CANVAS_HEIGHT - BOARD_PADDING * 2);
       ['white', 'red'].forEach(p => {
         const c = s.bar[p as Player]; const vY = (p === s.userColor) ? CANVAS_HEIGHT - 120 : 120;
-        for(let i=0; i<c; i++) { if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === c - 1) continue; drawCh(ctx, xB + 450, vY + (p === s.userColor ? -i*42 : i*42), p as Player); }
+        const canMoveBar = s.turn === s.userColor && s.movesLeft.length > 0 && p === s.turn;
+        for(let i=0; i<c; i++) { 
+          if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === c - 1) continue; 
+          drawCh(ctx, xB + 450, vY + (p === s.userColor ? -i*42 : i*42), p as Player, false, canMoveBar && i === c - 1); 
+        }
       });
       for(let i=0; i<s.off.white; i++) drawCh(ctx, 80, CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15, 'white');
       for(let i=0; i<s.off.red; i++) drawCh(ctx, 80, BOARD_PADDING + 40 + i*15, 'red');
@@ -420,35 +441,45 @@ const App: React.FC = () => {
     anim = requestAnimationFrame(draw); return () => cancelAnimationFrame(anim);
   }, [view, getPos, getZone, isMenuOpen]);
 
-  const drawCh = (ctx: any, x: number, y: number, p: Player, g = false) => {
-    ctx.save(); if (g) { ctx.shadowBlur = 40; ctx.shadowColor = COLORS.gold; }
-    const gr = ctx.createRadialGradient(x-8, y-8, 2, x, y, CHECKER_RADIUS);
+  const drawCh = (ctx: CanvasRenderingContext2D, x: number, y: number, p: Player, g = false, pulse = false) => {
+    ctx.save(); 
+    if (g) { ctx.shadowBlur = 40; ctx.shadowColor = COLORS.gold; }
+    else if (pulse) { 
+      ctx.shadowBlur = Math.max(0, 15 + Math.sin(Date.now() / 200) * 10); 
+      ctx.shadowColor = COLORS.gold; 
+    }
+    const gr = ctx.createRadialGradient(x - 8, y - 8, 2, x, y, CHECKER_RADIUS);
     if (p === 'white') { gr.addColorStop(0, '#fff'); gr.addColorStop(1, '#ccc'); } else { gr.addColorStop(0, '#f55'); gr.addColorStop(1, '#a00'); }
     ctx.beginPath(); ctx.arc(x, y, CHECKER_RADIUS, 0, Math.PI * 2); ctx.fillStyle = gr; ctx.fill(); ctx.restore();
   };
 
-  const drawD = (ctx: any, x: number, y: number, v: number, p: Player) => {
+  const drawD = (ctx: CanvasRenderingContext2D, x: number, y: number, v: number, p: Player) => {
     ctx.save(); ctx.fillStyle = p === 'white' ? '#fff' : '#f44';
-    ctx.beginPath(); ctx.roundRect(x-40, y-40, 80, 80, 15); ctx.fill();
+    ctx.beginPath(); 
+    if (typeof (ctx as any).roundRect === 'function') { (ctx as any).roundRect(x - 40, y - 40, 80, 80, 15); } 
+    else { ctx.rect(x - 40, y - 40, 80, 80); }
+    ctx.fill();
     ctx.fillStyle = p === 'white' ? '#000' : '#fff';
-    const ds: any = { 1: [[0,0]], 2: [[-22,-22], [22,22]], 3: [[-22,-22], [0,0], [22,22]], 4: [[-22,-22], [22,-22], [-22,22], [22,22]], 5: [[-22,-22], [22,-22], [0,0], [-22,22], [22,22]], 6: [[-22,-22], [22,-22], [-22,0], [22,0], [-22,22], [22,22]] };
-    ds[v].forEach(([dx, dy]: any) => { ctx.beginPath(); ctx.arc(x+dx, y+dy, 7, 0, Math.PI * 2); ctx.fill(); }); ctx.restore();
+    const ds: Record<number, number[][]> = { 1: [[0,0]], 2: [[-22,-22], [22,22]], 3: [[-22,-22], [0,0], [22,22]], 4: [[-22,-22], [22,-22], [-22,22], [22,22]], 5: [[-22,-22], [22,-22], [0,0], [-22,22], [22,22]], 6: [[-22,-22], [22,-22], [-22,0], [22,0], [-22,22], [22,22]] };
+    const points = ds[v] || [];
+    points.forEach((pt: number[]) => { ctx.beginPath(); ctx.arc(x + pt[0], y + pt[1], 7, 0, Math.PI * 2); ctx.fill(); }); 
+    ctx.restore();
   };
 
-  // IA SECUENCIAL OPTIMIZADA
+  // IA SECUENCIAL (Solo activa si modo === AI)
   useEffect(() => {
     if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING' && !isAiProcessing) {
       setIsAiProcessing(true);
       const runAILogic = async () => {
         let startTime = Date.now();
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise<void>(resolve => setTimeout(resolve, 1200));
         let current = stateRef.current;
         if (current.dice.length === 0) { rollDice(true); setIsAiProcessing(false); return; }
         const p = current.turn;
-        const diceUniq = Array.from(new Set(current.movesLeft)).sort((a,b) => b-a);
+        // Fix: Explicitly providing Type Parameter to Set to avoid unknown[] inference during Array.from
+        const diceUniq: number[] = Array.from(new Set<number>(current.movesLeft)).sort((a: number, b: number) => b - a);
         let moveFound = false;
-        if (Date.now() - startTime > 3000) { passTurn(); setIsAiProcessing(false); return; }
-
+        if (Date.now() - startTime > 3500) { passTurn(); setIsAiProcessing(false); return; }
         for (const d of diceUniq) {
           if (current.bar[p] > 0) {
             const target = getTargetPoint(p, -1, d);
@@ -470,7 +501,20 @@ const App: React.FC = () => {
       };
       runAILogic();
     }
-  }, [state.turn, state.dice.length, state.movesLeft.length, isAiProcessing, view]);
+  }, [state.turn, state.dice.length, state.movesLeft.length, isAiProcessing, view, state.gameMode]);
+
+  const generateRoom = () => {
+    const id = Math.random().toString(36).substring(2, 8).toUpperCase();
+    setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE' }));
+    setView('INVITE_SENT');
+  };
+
+  const copyInviteLink = () => {
+    const link = `${window.location.origin}${window.location.pathname}?room=${state.roomID}`;
+    navigator.clipboard.writeText(link);
+    setCopyFeedback(true);
+    setTimeout(() => setCopyFeedback(false), 2000);
+  };
 
   return (
     <div className="w-full h-full bg-black relative flex flex-col overflow-hidden" 
@@ -488,13 +532,15 @@ const App: React.FC = () => {
          onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
          onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
       
-      {/* Julie: Refactorizado SIN SALIDA - Transparente para ver el tablero */}
+      {/* BANNER SIN SALIDA */}
       {state.isBlocked && !state.winner && (
-        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[900] flex items-center justify-center pointer-events-none">
-           <div className="bg-stone-900/40 border border-yellow-600/30 p-8 rounded-[2rem] text-center max-w-xs shadow-2xl backdrop-blur-sm animate-in fade-in zoom-in duration-300 pointer-events-auto">
-              <h3 className="text-yellow-600 font-black text-2xl mb-2 uppercase italic">SIN SALIDA</h3>
-              <p className="text-white/80 mb-6 text-[10px] font-bold">No hay jugadas posibles para estos dados.</p>
-              <button onClick={passTurn} className="w-full bg-yellow-600 text-black font-black py-3 rounded-xl text-xs uppercase shadow-xl hover:scale-105 transition-transform">Siguiente Turno</button>
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[900] w-full max-w-lg px-4 pointer-events-none">
+           <div className="bg-stone-900/80 border border-yellow-600/50 p-6 rounded-3xl text-center shadow-4xl backdrop-blur-md animate-in slide-in-from-top duration-500 pointer-events-auto flex items-center justify-between">
+              <div className="text-left">
+                <h3 className="text-yellow-600 font-black text-xl uppercase italic leading-none">SIN SALIDA</h3>
+                <p className="text-white/60 text-[9px] font-bold uppercase mt-1">No hay movimientos legales posibles.</p>
+              </div>
+              <button onClick={passTurn} className="bg-yellow-600 text-black font-black py-3 px-8 rounded-xl text-xs uppercase shadow-xl hover:scale-105 active:scale-95 transition-all">Siguiente Turno</button>
            </div>
         </div>
       )}
@@ -514,16 +560,51 @@ const App: React.FC = () => {
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8">
            <h2 className="text-5xl font-black text-white mb-12 italic uppercase">Sala Online</h2>
            <div className="bg-stone-900 p-10 rounded-[3rem] w-full max-w-md border border-white/10 shadow-2xl space-y-8">
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-white/40 uppercase">Código de Sala</label>
-                <input type="text" placeholder="Escribe un código..." className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-white font-bold outline-none focus:border-yellow-600 transition-all" />
-              </div>
-              <div className="flex flex-col gap-3">
-                <button onClick={() => { resetGame('ONLINE'); setView('PLAYING'); }} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 active:scale-95 transition-all">Crear Partida</button>
-                <button onClick={() => { resetGame('ONLINE'); setView('PLAYING'); }} className="w-full bg-white/5 text-white font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse</button>
-              </div>
+              {state.roomID ? (
+                <div className="text-center space-y-6">
+                  <p className="text-white/60 uppercase font-black text-xs tracking-widest">Has sido invitado a la sala</p>
+                  <div className="text-5xl font-black text-yellow-600 bg-black/40 py-6 rounded-2xl border border-white/5">{state.roomID}</div>
+                  <button onClick={() => setView('PLAYING')} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all pulse-gold">Aceptar Reto</button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  <button onClick={generateRoom} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all">Crear Nueva Sala</button>
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div>
+                    <div className="relative flex justify-center text-[10px]"><span className="bg-stone-900 px-4 text-white/20 font-black uppercase tracking-widest">o usa un código</span></div>
+                  </div>
+                  <input type="text" placeholder="Código de sala..." className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-white text-center font-bold outline-none focus:border-yellow-600 transition-all uppercase" />
+                  <button onClick={() => setView('PLAYING')} className="w-full bg-white/5 text-white/40 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse por Código</button>
+                </div>
+              )}
            </div>
            <button onClick={() => setView('HOME')} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Volver</button>
+        </div>
+      )}
+
+      {view === 'INVITE_SENT' && (
+        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8">
+           <div className="bg-stone-900 p-12 rounded-[4rem] w-full max-w-lg border border-white/10 shadow-4xl text-center space-y-10">
+              <div className="w-24 h-24 bg-yellow-600/10 rounded-full flex items-center justify-center mx-auto animate-bounce">
+                <span className="text-4xl">🔗</span>
+              </div>
+              <div>
+                <h3 className="text-3xl font-black text-white italic uppercase mb-2">¡SALA CREADA!</h3>
+                <p className="text-white/40 text-xs font-black uppercase tracking-widest px-8 leading-relaxed">Envía el link a tu oponente. La partida empezará cuando se conecte.</p>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="bg-black/40 p-4 rounded-2xl border border-white/5 text-yellow-600 font-mono font-bold text-xl break-all">
+                  {`${window.location.origin}${window.location.pathname}?room=${state.roomID}`}
+                </div>
+                <button onClick={copyInviteLink} className={`w-full py-5 rounded-2xl font-black uppercase transition-all shadow-xl ${copyFeedback ? 'bg-green-600 text-white' : 'bg-white text-black hover:bg-yellow-600 hover:text-white'}`}>
+                  {copyFeedback ? '¡LINK COPIADO!' : 'COPIAR LINK DE INVITACIÓN'}
+                </button>
+              </div>
+
+              <button onClick={() => setView('PLAYING')} className="w-full bg-stone-800 text-white/40 font-black py-4 rounded-2xl uppercase hover:text-white transition-all text-[10px] tracking-widest">Esperar en el tablero...</button>
+           </div>
+           <button onClick={() => setView('HOME')} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
         </div>
       )}
 
@@ -535,10 +616,13 @@ const App: React.FC = () => {
             </button>
             <div className="flex gap-4 items-center">
               {state.turn === state.userColor && history.length > 0 && <button onClick={undoMove} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}
+              
+              {/* Julie: Turn Label Refactored para Multijugador */}
               <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
-                {state.turn === state.userColor ? 'TU TURNO' : 'IA PENSANDO...'}
+                {state.turn === state.userColor ? 'TU TURNO' : (state.gameMode === 'AI' ? 'IA PENSANDO...' : 'ESPERANDO RIVAL...')}
               </div>
-              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all">Lanzar</button>
+              
+              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className={`bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all ${state.turn === state.userColor && state.movesLeft.length === 0 ? 'pulse-gold shadow-glow' : ''}`}>Lanzar</button>
             </div>
           </header>
 
@@ -547,18 +631,18 @@ const App: React.FC = () => {
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted />
             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
             
-            {/* Julie: Pantalla de Victoria con Confetti */}
             {state.winner && (
-              <div className="absolute inset-0 z-[200] bg-black/90 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-700">
+              <div className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-700">
                 <ConfettiRain />
-                <div className="text-center z-[210]">
-                  <h2 className="text-2xl font-black text-yellow-600/60 uppercase tracking-widest mb-2 italic">¡Tenemos un ganador!</h2>
-                  <h1 className="text-8xl font-black italic text-white uppercase mb-12 tracking-tighter drop-shadow-glow">
+                <div className="text-center z-[210] p-12 bg-stone-900/40 border border-white/5 rounded-[4rem] shadow-4xl animate-in zoom-in duration-500 delay-200">
+                  <h2 className="text-3xl font-black text-yellow-600 uppercase tracking-widest mb-2 italic">¡Felicidades!</h2>
+                  <h1 className="text-9xl font-black italic text-white uppercase mb-4 tracking-tighter">
                     {state.winner === 'white' ? 'BLANCAS' : 'ROJAS'}
                   </h1>
-                  <div className="flex flex-col gap-4 w-72 mx-auto">
-                    <button onClick={() => resetGame(state.gameMode)} className="bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase text-lg shadow-3xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button>
-                    <button onClick={() => { resetGame(); setView('HOME'); }} className="bg-white/10 text-white font-black py-4 rounded-2xl uppercase text-xs tracking-widest hover:bg-white/20 transition-all border border-white/10">Menu Inicio</button>
+                  <p className="text-white/40 font-black uppercase tracking-widest text-xs mb-12 italic">Dominio total del tablero</p>
+                  <div className="flex flex-col gap-4 w-80 mx-auto">
+                    <button onClick={() => resetGame(state.gameMode)} className="bg-yellow-600 text-black font-black py-6 rounded-3xl uppercase text-xl shadow-4xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button>
+                    <button onClick={() => { resetGame(); setView('HOME'); }} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button>
                   </div>
                 </div>
               </div>
