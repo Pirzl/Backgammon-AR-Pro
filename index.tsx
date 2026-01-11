@@ -4,7 +4,11 @@ import ReactDOM from 'react-dom/client';
 
 // --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
 window.addEventListener('error', (e) => {
-  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError', 'NotAllowedError', 'AbortError', 'NS_ERROR_CORRUPTED_CONTENT'];
+  const ignored = [
+    'WebSocket', 'message channel closed', 'favicon.ico', 
+    'refresh.js', 'NotReadableError', 'NotAllowedError', 
+    'AbortError', 'NS_ERROR_CORRUPTED_CONTENT', 'PeerJS', 'Could not start video source'
+  ];
   if (ignored.some(msg => (e.message || '').includes(msg))) {
     e.stopImmediatePropagation();
     return false;
@@ -86,7 +90,7 @@ const CANVAS_HEIGHT = 700;
 const BOARD_PADDING = 40;
 const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 26;
-const PINCH_THRESHOLD = 0.055;
+const RELATIVE_PINCH_THRESHOLD = 0.45; // Relativo al tamaño de la palma
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
 const initialPoints = (): Point[] => {
@@ -210,17 +214,25 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- MULTIPLAYER CORE (PEERJS) ---
+  // --- MULTIPLAYER P2P (PEERJS) ---
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
-        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substr(2, 4)}`;
-        const peer = new (window as any).Peer(peerID);
+        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 8)}`;
+        const peer = new (window as any).Peer(peerID, { 
+            debug: 0,
+            config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }] } 
+        });
         peerRef.current = peer;
 
         peer.on('open', () => {
             if (!state.isHost) {
-                const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
-                setupConnection(conn);
+                const connectWithRetry = (count = 0) => {
+                    if (count > 5) return;
+                    const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
+                    setupConnection(conn);
+                    conn.on('error', () => setTimeout(() => connectWithRetry(count + 1), 2000));
+                };
+                connectWithRetry();
             }
         });
 
@@ -251,10 +263,10 @@ const App: React.FC = () => {
                     }));
                 }
             });
-            conn.on('close', () => { setState(s => ({ ...s, onlineOpponentConnected: false })); });
+            conn.on('close', () => setState(s => ({ ...s, onlineOpponentConnected: false })));
         };
 
-        return () => { peer.destroy(); };
+        return () => { if (peer) peer.destroy(); };
     }
   }, [state.roomID, state.gameMode]);
 
@@ -288,7 +300,7 @@ const App: React.FC = () => {
     broadcastState(newState);
   }, [broadcastState]);
 
-  // --- CAMERA & AR LOGIC ---
+  // --- AR LOGIC & HIGH ACCURACY HAND TRACKING ---
   useEffect(() => {
     if (view !== 'PLAYING') return;
     let mounted = true;
@@ -303,12 +315,33 @@ const App: React.FC = () => {
       }
       
       const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-      hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+      hands.setOptions({ 
+        maxNumHands: 1, 
+        modelComplexity: 1, // Alta precisión para detectar movimientos rápidos
+        minDetectionConfidence: 0.7, 
+        minTrackingConfidence: 0.8 // Mayor confianza para reducir jitter
+      });
+
       hands.onResults((results: any) => {
-        if (!mounted || !results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
+        if (!mounted || !results.multiHandLandmarks?.length) { 
+          rawHand.current.isDetected = false; 
+          return; 
+        }
         const l = results.multiHandLandmarks[0];
-        const dist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
-        rawHand.current = { x: (1 - l[8].x) * CANVAS_WIDTH, y: l[8].y * CANVAS_HEIGHT, isPinching: dist < PINCH_THRESHOLD, isDetected: true };
+        // Tamaño de la palma como referencia de escala (distancia muñeca -> base dedo medio)
+        const palmSize = Math.sqrt(Math.pow(l[0].x - l[9].x, 2) + Math.pow(l[0].y - l[9].y, 2));
+        // Distancia entre pulgar e índice
+        const pinchDist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
+        
+        // El pinch es relativo al tamaño de la mano para que funcione a cualquier distancia de la cámara
+        const isPinching = (pinchDist / palmSize) < RELATIVE_PINCH_THRESHOLD;
+
+        rawHand.current = { 
+          x: (1 - l[8].x) * CANVAS_WIDTH, 
+          y: l[8].y * CANVAS_HEIGHT, 
+          isPinching, 
+          isDetected: true 
+        };
       });
 
       try {
@@ -320,10 +353,10 @@ const App: React.FC = () => {
         });
         await cameraInstance.start();
       } catch (err: any) {
-        if (err.name === 'NotReadableError' || err.name === 'AbortError') {
-            setCameraError("La cámara está siendo usada por otro proceso.");
+        if (err.name === 'NotReadableError' || err.name === 'AbortError' || err.message?.includes('Could not start')) {
+            setCameraError("Cámara ocupada. Jugando solo con mouse/touch.");
         } else {
-            console.warn("Camera init error:", err);
+            setCameraError("Error al iniciar cámara. Se requiere permiso o hardware disponible.");
         }
       } finally {
         if (mounted) setIsARLoading(false);
@@ -481,12 +514,16 @@ const App: React.FC = () => {
       const isRed = s.userColor === 'red';
       
       if (rawHand.current.isDetected) {
-        smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.35;
-        smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.35;
+        // Suavizado adaptativo para respuesta fluida a movimientos rápidos
+        const lerpFactor = 0.45; 
+        smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * lerpFactor;
+        smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * lerpFactor;
+        
         pinchBuffer.current.push(rawHand.current.isPinching);
-        if (pinchBuffer.current.length > 8) pinchBuffer.current.shift();
-        const isPinchSteady = pinchBuffer.current.filter(b => b).length >= 5;
-        const isReleaseSteady = pinchBuffer.current.filter(b => !b).length >= 6;
+        if (pinchBuffer.current.length > 6) pinchBuffer.current.shift();
+        
+        const isPinchSteady = pinchBuffer.current.filter(b => b).length >= 4;
+        const isReleaseSteady = pinchBuffer.current.filter(b => !b).length >= 4;
 
         if (isPinchSteady && !grabbedRef.current && s.turn === s.userColor && !s.winner && !s.isBlocked && !isMenuOpen) {
           const zone = getZone(smoothHand.current.x, smoothHand.current.y, isRed);
@@ -539,12 +576,17 @@ const App: React.FC = () => {
       for(let i=0; i<s.off.white; i++) drawCh(ctx, isRed ? CANVAS_WIDTH - 80 : 80, isRed ? BOARD_PADDING + 40 + i*15 : CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15, 'white');
       for(let i=0; i<s.off.red; i++) drawCh(ctx, isRed ? CANVAS_WIDTH - 80 : 80, isRed ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'red');
       if (s.dice.length > 0) s.dice.forEach((d, i) => drawD(ctx, xB + 450 + (i === 0 ? -180 : 180), CANVAS_HEIGHT/2, d, s.turn));
+      
       const drawX = grabbedRef.current?.isMouse ? mousePos.current.x : smoothHand.current.x;
       const drawY = grabbedRef.current?.isMouse ? mousePos.current.y : smoothHand.current.y;
       if (grabbedRef.current) drawCh(ctx, drawX, drawY, grabbedRef.current.player, true);
+      
       if (rawHand.current.isDetected) {
-        ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 12 : 24, 0, Math.PI * 2);
-        ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : 'white'; ctx.lineWidth = 4; ctx.stroke();
+        ctx.beginPath(); 
+        ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 12 : 24, 0, Math.PI * 2);
+        ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : 'white'; 
+        ctx.lineWidth = 4; 
+        ctx.stroke();
       }
       anim = requestAnimationFrame(draw);
     };
@@ -618,8 +660,14 @@ const App: React.FC = () => {
     });
   };
 
-  const acceptInvite = () => {
-    setView('PLAYING');
+  const acceptInvite = () => setView('PLAYING');
+
+  const exitGame = () => {
+    clearRoomURL();
+    resetGame('LOCAL');
+    setView('HOME');
+    setIsMenuOpen(false);
+    if (peerRef.current) peerRef.current.destroy();
   };
 
   return (
@@ -627,15 +675,18 @@ const App: React.FC = () => {
          onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY)}
          onMouseUp={(e) => handlePointerUp(e.clientX, e.clientY)}
          onMouseMove={(e) => { mousePos.current = getClampedCoords(e.clientX, e.clientY); }}
-         onTouchStart={(e) => { handlePointerDown(e.touches[0].clientX, e.touches[0].clientY); }}
-         onTouchEnd={(e) => { handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY); }}
-         onTouchMove={(e) => { mousePos.current = getClampedCoords(e.touches[0].clientX, e.touches[0].clientY); }}>
+         onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
+         onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}
+         onTouchMove={(e) => { 
+           const coords = getClampedCoords(e.touches[0].clientX, e.touches[0].clientY);
+           mousePos.current = coords; 
+         }}>
       
       {cameraError && (
         <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[1000] w-full max-w-sm px-4 pointer-events-none">
-           <div className="bg-red-900/90 border border-red-500 p-4 rounded-2xl text-center shadow-4xl backdrop-blur-md animate-in fade-in duration-300 pointer-events-auto">
-              <p className="text-white text-[10px] font-black uppercase tracking-widest">{cameraError}</p>
-              <button onClick={() => setCameraError(null)} className="mt-2 text-white/50 text-[9px] underline uppercase">Entendido</button>
+           <div className="bg-stone-900/90 border border-yellow-600/50 p-4 rounded-2xl text-center shadow-4xl backdrop-blur-md animate-in slide-in-from-top duration-300 pointer-events-auto">
+              <p className="text-white text-[10px] font-black uppercase tracking-widest leading-relaxed">{cameraError}</p>
+              <button onClick={() => setCameraError(null)} className="mt-2 text-yellow-600 text-[9px] font-black underline uppercase">Entendido</button>
            </div>
         </div>
       )}
@@ -724,7 +775,7 @@ const App: React.FC = () => {
                  )}
               </div>
            </div>
-           <button onClick={() => { setView('HOME'); clearRoomURL(); setState(s => ({ ...s, roomID: '' })); }} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
+           <button onClick={exitGame} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
         </div>
       )}
 
@@ -737,7 +788,7 @@ const App: React.FC = () => {
             <div className="flex gap-4 items-center">
               {state.turn === state.userColor && history.length > 0 && <button onClick={(e) => { e.stopPropagation(); undoMove(); }} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}
               <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
-                {state.turn === state.userColor ? 'TU TURNO' : (state.gameMode === 'AI' ? 'IA PENSANDO...' : 'ESPERANDO RIVAL...')}
+                {state.turn === state.userColor ? 'TU TURNO' : (state.gameMode === 'AI' ? 'IA PENSANDO...' : 'ESPERANDO...')}
               </div>
               <button onClick={(e) => { e.stopPropagation(); rollDice(); }} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className={`bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all ${state.turn === state.userColor && state.movesLeft.length === 0 ? 'pulse-gold shadow-glow' : ''}`}>Lanzar</button>
             </div>
@@ -751,6 +802,7 @@ const App: React.FC = () => {
             )}
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted />
             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
+            
             {state.winner && (
               <div className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-700">
                 <ConfettiRain />
@@ -762,7 +814,7 @@ const App: React.FC = () => {
                   <p className="text-white/40 font-black uppercase tracking-widest text-xs mb-12 italic">Victoria</p>
                   <div className="flex flex-col gap-4 w-80 mx-auto">
                     <button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); }} className="bg-yellow-600 text-black font-black py-6 rounded-3xl uppercase text-xl shadow-4xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button>
-                    <button onClick={(e) => { e.stopPropagation(); resetGame(); clearRoomURL(); setView('HOME'); }} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button>
+                    <button onClick={exitGame} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button>
                   </div>
                 </div>
               </div>
@@ -784,7 +836,7 @@ const App: React.FC = () => {
                 </div>
                 <div className="pt-10 flex flex-col gap-3">
                   <button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); setIsMenuOpen(false); }} className="w-full bg-yellow-600/10 py-5 rounded-2xl text-yellow-600 font-black text-xs uppercase border border-yellow-600/20 hover:bg-yellow-600 hover:text-black transition-all">Reiniciar</button>
-                  <button onClick={(e) => { e.stopPropagation(); resetGame(); clearRoomURL(); setView('HOME'); setIsMenuOpen(false); }} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
+                  <button onClick={exitGame} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
                 </div>
              </div>
           </aside>

@@ -8,12 +8,12 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Backgammon AR Pro | Online</title>
     
-    <!-- Script de emergencia para limpiar Service Workers corruptos -->
     <script>
+      // Limpieza preventiva de Service Workers para evitar errores de caché corrupta
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(registrations => {
-          for (let registration of registrations) { registration.unregister(); }
-        });
+        navigator.serviceWorker.getRegistrations().then(regs => {
+          for (let reg of regs) reg.unregister();
+        }).catch(() => {});
       }
     </script>
 
@@ -22,11 +22,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
     
-    <!-- MediaPipe Scripts con fallback de carga -->
+    <!-- MediaPipe con configuración robusta -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     
-    <!-- PeerJS para multijugador entre redes reales -->
+    <!-- PeerJS para multijugador real P2P -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 
     <style>
@@ -66,9 +66,14 @@
 
         canvas { outline: none; }
         
-        /* Ajuste para Notch en iOS */
         .safe-top { padding-top: env(safe-area-inset-top); }
         .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+        
+        /* Optimización de renderizado para Safari */
+        canvas, video {
+            -webkit-transform: translate3d(0,0,0);
+            transform: translate3d(0,0,0);
+        }
     </style>
 
 <script type="importmap">
