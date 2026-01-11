@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 // --- SILENCIADOR DE ERRORES ---
 window.addEventListener('error', (e) => {
-  if (e.message.includes('WebSocket') || e.message.includes('message channel closed')) {
+  if (e.message.includes('WebSocket') || e.message.includes('message channel closed') || e.message.includes('favicon.ico')) {
     e.stopImmediatePropagation();
     return false;
   }
@@ -72,6 +72,7 @@ export interface GameState {
   gameMode: GameMode;
   userColor: Player;
   roomID: string;
+  isHost: boolean;
   boardOpacity: number;
   cameraOpacity: number;
   isBlocked: boolean;
@@ -130,7 +131,6 @@ const isValidMove = (state: GameState, player: Player, from: number, to: number 
 const hasAnyLegalMove = (state: GameState): boolean => {
   if (state.movesLeft.length === 0) return true;
   const p = state.turn;
-  // Fix: Explicitly providing Type Parameter to Set to avoid unknown[] inference during Array.from
   const diceUniq = Array.from(new Set<number>(state.movesLeft));
   if (state.bar[p] > 0) return diceUniq.some(die => isValidMove(state, p, -1, getTargetPoint(p, -1, die), die));
   for (let i = 0; i < 24; i++) {
@@ -145,7 +145,6 @@ const hasAnyLegalMove = (state: GameState): boolean => {
   return false;
 };
 
-// --- COMPONENTES AUXILIARES ---
 const ConfettiRain: React.FC = () => {
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden z-[140]">
@@ -185,19 +184,19 @@ const App: React.FC = () => {
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
     turn: 'white', dice: [], movesLeft: [], grabbed: null,
     winner: null, gameMode: 'LOCAL', userColor: 'white',
-    roomID: '', boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false,
+    roomID: '', isHost: true, boardOpacity: 0.9, cameraOpacity: 0.35, isBlocked: false,
     onlineOpponentConnected: false
   });
 
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  // Deep Linking Check
+  // Deep Linking Check: Solo si entramos por un link con ?room=
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
     if (room && view === 'HOME') {
-      setState(s => ({ ...s, roomID: room, userColor: 'red', gameMode: 'ONLINE' }));
+      setState(s => ({ ...s, roomID: room, userColor: 'red', gameMode: 'ONLINE', isHost: false }));
       setView('ONLINE_LOBBY');
     }
   }, []);
@@ -466,7 +465,6 @@ const App: React.FC = () => {
     ctx.restore();
   };
 
-  // IA SECUENCIAL (Solo activa si modo === AI)
   useEffect(() => {
     if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING' && !isAiProcessing) {
       setIsAiProcessing(true);
@@ -476,7 +474,6 @@ const App: React.FC = () => {
         let current = stateRef.current;
         if (current.dice.length === 0) { rollDice(true); setIsAiProcessing(false); return; }
         const p = current.turn;
-        // Fix: Explicitly providing Type Parameter to Set to avoid unknown[] inference during Array.from
         const diceUniq: number[] = Array.from(new Set<number>(current.movesLeft)).sort((a: number, b: number) => b - a);
         let moveFound = false;
         if (Date.now() - startTime > 3500) { passTurn(); setIsAiProcessing(false); return; }
@@ -505,15 +502,22 @@ const App: React.FC = () => {
 
   const generateRoom = () => {
     const id = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE' }));
+    setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE', isHost: true }));
     setView('INVITE_SENT');
   };
 
   const copyInviteLink = () => {
     const link = `${window.location.origin}${window.location.pathname}?room=${state.roomID}`;
-    navigator.clipboard.writeText(link);
-    setCopyFeedback(true);
-    setTimeout(() => setCopyFeedback(false), 2000);
+    navigator.clipboard.writeText(link).then(() => {
+      setCopyFeedback(true);
+      setTimeout(() => setCopyFeedback(false), 2000);
+    });
+  };
+
+  const joinByCode = (code: string) => {
+    if (!code) return;
+    setState(s => ({ ...s, roomID: code.toUpperCase(), userColor: 'red', gameMode: 'ONLINE', isHost: false }));
+    setView('ONLINE_LOBBY');
   };
 
   return (
@@ -532,7 +536,6 @@ const App: React.FC = () => {
          onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
          onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
       
-      {/* BANNER SIN SALIDA */}
       {state.isBlocked && !state.winner && (
         <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[900] w-full max-w-lg px-4 pointer-events-none">
            <div className="bg-stone-900/80 border border-yellow-600/50 p-6 rounded-3xl text-center shadow-4xl backdrop-blur-md animate-in slide-in-from-top duration-500 pointer-events-auto flex items-center justify-between">
@@ -560,7 +563,7 @@ const App: React.FC = () => {
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8">
            <h2 className="text-5xl font-black text-white mb-12 italic uppercase">Sala Online</h2>
            <div className="bg-stone-900 p-10 rounded-[3rem] w-full max-w-md border border-white/10 shadow-2xl space-y-8">
-              {state.roomID ? (
+              {!state.isHost && state.roomID ? (
                 <div className="text-center space-y-6">
                   <p className="text-white/60 uppercase font-black text-xs tracking-widest">Has sido invitado a la sala</p>
                   <div className="text-5xl font-black text-yellow-600 bg-black/40 py-6 rounded-2xl border border-white/5">{state.roomID}</div>
@@ -573,8 +576,11 @@ const App: React.FC = () => {
                     <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div>
                     <div className="relative flex justify-center text-[10px]"><span className="bg-stone-900 px-4 text-white/20 font-black uppercase tracking-widest">o usa un código</span></div>
                   </div>
-                  <input type="text" placeholder="Código de sala..." className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-white text-center font-bold outline-none focus:border-yellow-600 transition-all uppercase" />
-                  <button onClick={() => setView('PLAYING')} className="w-full bg-white/5 text-white/40 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse por Código</button>
+                  <input id="room-code-input" type="text" placeholder="Código de sala..." className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-white text-center font-bold outline-none focus:border-yellow-600 transition-all uppercase" />
+                  <button onClick={() => {
+                    const val = (document.getElementById('room-code-input') as HTMLInputElement)?.value;
+                    joinByCode(val);
+                  }} className="w-full bg-white/5 text-white/40 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse por Código</button>
                 </div>
               )}
            </div>
@@ -602,9 +608,15 @@ const App: React.FC = () => {
                 </button>
               </div>
 
-              <button onClick={() => setView('PLAYING')} className="w-full bg-stone-800 text-white/40 font-black py-4 rounded-2xl uppercase hover:text-white transition-all text-[10px] tracking-widest">Esperar en el tablero...</button>
+              <div className="pt-4 flex flex-col items-center">
+                 <div className="flex items-center gap-3 text-white/20 animate-pulse">
+                   <div className="w-2 h-2 bg-yellow-600 rounded-full"></div>
+                   <span className="text-[10px] font-black uppercase tracking-widest">Esperando que el rival se una...</span>
+                 </div>
+                 <button onClick={() => setView('PLAYING')} className="mt-6 w-full bg-white/5 text-white/60 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all text-[10px] tracking-widest">Empezar sin esperar</button>
+              </div>
            </div>
-           <button onClick={() => setView('HOME')} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
+           <button onClick={() => { setView('HOME'); setState(s => ({ ...s, roomID: '' })); }} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
         </div>
       )}
 
@@ -617,7 +629,6 @@ const App: React.FC = () => {
             <div className="flex gap-4 items-center">
               {state.turn === state.userColor && history.length > 0 && <button onClick={undoMove} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}
               
-              {/* Julie: Turn Label Refactored para Multijugador */}
               <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
                 {state.turn === state.userColor ? 'TU TURNO' : (state.gameMode === 'AI' ? 'IA PENSANDO...' : 'ESPERANDO RIVAL...')}
               </div>
