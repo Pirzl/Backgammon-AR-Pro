@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 // --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
 window.addEventListener('error', (e) => {
-  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError'];
+  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError', 'NotAllowedError'];
   if (ignored.some(msg => e.message?.includes(msg))) {
     e.stopImmediatePropagation();
     return false;
@@ -288,40 +288,43 @@ const App: React.FC = () => {
     const HandsClass = (window as any).Hands;
     const CameraClass = (window as any).Camera;
     
-    if (!HandsClass || !CameraClass || !videoRef.current) {
-        setIsARLoading(false);
+    const initAR = async () => {
+      if (!HandsClass || !CameraClass || !videoRef.current) {
+        if (mounted) setIsARLoading(false);
         return;
-    }
+      }
+      
+      const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+      hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+      hands.onResults((results: any) => {
+        if (!mounted || !results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
+        const l = results.multiHandLandmarks[0];
+        const dist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
+        rawHand.current = { x: (1 - l[8].x) * CANVAS_WIDTH, y: l[8].y * CANVAS_HEIGHT, isPinching: dist < PINCH_THRESHOLD, isDetected: true };
+      });
 
-    const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
-    hands.onResults((results: any) => {
-      if (!mounted || !results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
-      const l = results.multiHandLandmarks[0];
-      const dist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
-      rawHand.current = { x: (1 - l[8].x) * CANVAS_WIDTH, y: l[8].y * CANVAS_HEIGHT, isPinching: dist < PINCH_THRESHOLD, isDetected: true };
-    });
-
-    const initCamera = async () => {
-        try {
-            cameraInstance = new CameraClass(videoRef.current, { 
-                onFrame: async () => { if (mounted) await hands.send({ image: videoRef.current! }); }, 
-                width: 1280, height: 720 
-            });
-            await cameraInstance.start();
-            if (mounted) setIsARLoading(false);
-        } catch (err) {
-            console.warn("Camera access failed, falling back to mouse-only mode.", err);
-            if (mounted) setIsARLoading(false);
-        }
+      try {
+        cameraInstance = new CameraClass(videoRef.current, { 
+          onFrame: async () => { 
+            if (mounted && videoRef.current) {
+                try { await hands.send({ image: videoRef.current }); } catch(e) {}
+            }
+          }, 
+          width: 1280, height: 720 
+        });
+        await cameraInstance.start();
+      } catch (err) {
+        console.warn("Camera failed to start:", err);
+      } finally {
+        if (mounted) setIsARLoading(false);
+      }
     };
 
-    initCamera();
+    initAR();
 
     return () => { 
         mounted = false; 
-        if (cameraInstance) cameraInstance.stop(); 
-        hands.close(); 
+        if (cameraInstance) try { cameraInstance.stop(); } catch(e) {}
     };
   }, [view]);
 
@@ -422,13 +425,9 @@ const App: React.FC = () => {
     return null;
   }, [getPos]);
 
-  const handlePointerDown = (clientX: number, clientY: number) => {
-    if (isMenuOpen || stateRef.current.winner) return;
-    const s = stateRef.current;
-    if (s.turn !== s.userColor) return;
+  const getClampedCoords = (clientX: number, clientY: number) => {
     const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    
+    if (!rect) return { x: 0, y: 0 };
     const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
     const rectAspect = rect.width / rect.height;
     let scale, ox, oy;
@@ -441,10 +440,17 @@ const App: React.FC = () => {
         ox = 0;
         oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
     }
+    return {
+      x: (clientX - rect.left - ox) / scale,
+      y: (clientY - rect.top - oy) / scale
+    };
+  };
 
-    const x = (clientX - rect.left - ox) / scale;
-    const y = (clientY - rect.top - oy) / scale;
-    
+  const handlePointerDown = (clientX: number, clientY: number) => {
+    if (isMenuOpen || stateRef.current.winner) return;
+    const s = stateRef.current;
+    if (s.turn !== s.userColor) return;
+    const { x, y } = getClampedCoords(clientX, clientY);
     const zone = getZone(x, y, s.userColor === 'red');
     if (zone?.type === 'bar' && s.bar[s.turn] > 0) {
       grabbedRef.current = { player: s.turn, fromIndex: -1, x, y, isMouse: true };
@@ -458,25 +464,7 @@ const App: React.FC = () => {
   const handlePointerUp = (clientX: number, clientY: number) => {
     if (!grabbedRef.current || !grabbedRef.current.isMouse) return;
     const s = stateRef.current;
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
-    const rectAspect = rect.width / rect.height;
-    let scale, ox, oy;
-    if (rectAspect > canvasAspect) {
-        scale = rect.height / CANVAS_HEIGHT;
-        ox = (rect.width - CANVAS_WIDTH * scale) / 2;
-        oy = 0;
-    } else {
-        scale = rect.width / CANVAS_WIDTH;
-        ox = 0;
-        oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
-    }
-
-    const x = (clientX - rect.left - ox) / scale;
-    const y = (clientY - rect.top - oy) / scale;
-    
+    const { x, y } = getClampedCoords(clientX, clientY);
     const tz = getZone(x, y, s.userColor === 'red');
     if (tz) {
       const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
@@ -644,22 +632,8 @@ const App: React.FC = () => {
          onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY)}
          onMouseUp={(e) => handlePointerUp(e.clientX, e.clientY)}
          onMouseMove={(e) => {
-            const rect = canvasRef.current?.getBoundingClientRect();
-            if (!rect) return;
-            const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
-            const rectAspect = rect.width / rect.height;
-            let scale, ox, oy;
-            if (rectAspect > canvasAspect) {
-                scale = rect.height / CANVAS_HEIGHT;
-                ox = (rect.width - CANVAS_WIDTH * scale) / 2;
-                oy = 0;
-            } else {
-                scale = rect.width / CANVAS_WIDTH;
-                ox = 0;
-                oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
-            }
-            mousePos.current.x = (e.clientX - rect.left - ox) / scale;
-            mousePos.current.y = (e.clientY - rect.top - oy) / scale;
+            const coords = getClampedCoords(e.clientX, e.clientY);
+            mousePos.current = coords;
          }}
          onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
          onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
@@ -671,7 +645,7 @@ const App: React.FC = () => {
                 <h3 className="text-yellow-600 font-black text-xl uppercase italic leading-none">SIN SALIDA</h3>
                 <p className="text-white/60 text-[9px] font-bold uppercase mt-1">No hay movimientos legales posibles.</p>
               </div>
-              <button onClick={passTurn} className="bg-yellow-600 text-black font-black py-3 px-8 rounded-xl text-xs uppercase shadow-xl hover:scale-105 active:scale-95 transition-all">Siguiente Turno</button>
+              <button onClick={(e) => { e.stopPropagation(); passTurn(); }} className="bg-yellow-600 text-black font-black py-3 px-8 rounded-xl text-xs uppercase shadow-xl hover:scale-105 active:scale-95 transition-all">Siguiente Turno</button>
            </div>
         </div>
       )}
