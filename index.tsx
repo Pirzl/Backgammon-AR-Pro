@@ -90,7 +90,7 @@ const CANVAS_HEIGHT = 700;
 const BOARD_PADDING = 40;
 const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 26;
-const RELATIVE_PINCH_THRESHOLD = 0.45; // Relativo al tamaño de la palma
+const RELATIVE_PINCH_THRESHOLD = 0.5; 
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
 const initialPoints = (): Point[] => {
@@ -214,35 +214,30 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- MULTIPLAYER P2P (PEERJS) ---
+  // --- MULTIPLAYER P2P (PEERJS) ROBUSTO ---
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
-        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 8)}`;
+        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 6)}`;
         const peer = new (window as any).Peer(peerID, { 
             debug: 0,
-            config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }] } 
+            config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] } 
         });
         peerRef.current = peer;
 
         peer.on('open', () => {
             if (!state.isHost) {
-                const connectWithRetry = (count = 0) => {
-                    if (count > 5) return;
-                    const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
-                    setupConnection(conn);
-                    conn.on('error', () => setTimeout(() => connectWithRetry(count + 1), 2000));
-                };
-                connectWithRetry();
+                const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
+                setupConnection(conn);
+                conn.on('open', () => {
+                    // El invitado avisa que está listo
+                    conn.send({ type: 'GUEST_HELLO' });
+                });
             }
         });
 
         peer.on('connection', (conn: any) => {
             if (stateRef.current.isHost) {
                 setupConnection(conn);
-                conn.on('open', () => {
-                   setState(s => ({ ...s, onlineOpponentConnected: true }));
-                   conn.send({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
-                });
             }
         });
 
@@ -250,10 +245,26 @@ const App: React.FC = () => {
             connRef.current = conn;
             conn.on('data', (data: any) => {
                 const { type, payload } = data;
+                
+                // El Host recibe el saludo y envía el estado
+                if (type === 'GUEST_HELLO' && stateRef.current.isHost) {
+                    setState(s => ({ ...s, onlineOpponentConnected: true }));
+                    conn.send({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
+                }
+
+                // El Invitado recibe el ACK y entra al juego
                 if (type === 'HANDSHAKE_ACK') {
-                    setState(s => ({ ...payload, onlineOpponentConnected: true, isHost: false, userColor: 'red' }));
+                    setState(s => ({ 
+                      ...payload, 
+                      onlineOpponentConnected: true, 
+                      isHost: false, 
+                      userColor: 'red',
+                      roomID: stateRef.current.roomID // Mantener mi ID de sala
+                    }));
                     setView('PLAYING');
                 }
+
+                // Sincronización continua
                 if (type === 'STATE_SYNC') {
                     setState(s => ({
                       ...s, ...payload,
@@ -270,17 +281,19 @@ const App: React.FC = () => {
     }
   }, [state.roomID, state.gameMode]);
 
+  // Transición automática del Host cuando el rival se conecta
   useEffect(() => {
-    if (state.isHost && state.onlineOpponentConnected && view === 'INVITE_SENT') {
+    if (state.isHost && state.onlineOpponentConnected && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY')) {
       setView('PLAYING');
     }
   }, [state.onlineOpponentConnected, view, state.isHost]);
 
+  // Manejo de URL al inicio
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
     if (room && view === 'HOME') {
-      setState(s => ({ ...s, roomID: room, userColor: 'red', gameMode: 'ONLINE', isHost: false }));
+      setState(s => ({ ...s, roomID: room.toUpperCase(), userColor: 'red', gameMode: 'ONLINE', isHost: false }));
       setView('ONLINE_LOBBY');
     }
   }, []);
@@ -317,9 +330,9 @@ const App: React.FC = () => {
       const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
       hands.setOptions({ 
         maxNumHands: 1, 
-        modelComplexity: 1, // Alta precisión para detectar movimientos rápidos
-        minDetectionConfidence: 0.7, 
-        minTrackingConfidence: 0.8 // Mayor confianza para reducir jitter
+        modelComplexity: 1, 
+        minDetectionConfidence: 0.65, 
+        minTrackingConfidence: 0.7 
       });
 
       hands.onResults((results: any) => {
@@ -328,12 +341,8 @@ const App: React.FC = () => {
           return; 
         }
         const l = results.multiHandLandmarks[0];
-        // Tamaño de la palma como referencia de escala (distancia muñeca -> base dedo medio)
         const palmSize = Math.sqrt(Math.pow(l[0].x - l[9].x, 2) + Math.pow(l[0].y - l[9].y, 2));
-        // Distancia entre pulgar e índice
         const pinchDist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
-        
-        // El pinch es relativo al tamaño de la mano para que funcione a cualquier distancia de la cámara
         const isPinching = (pinchDist / palmSize) < RELATIVE_PINCH_THRESHOLD;
 
         rawHand.current = { 
@@ -354,9 +363,11 @@ const App: React.FC = () => {
         await cameraInstance.start();
       } catch (err: any) {
         if (err.name === 'NotReadableError' || err.name === 'AbortError' || err.message?.includes('Could not start')) {
-            setCameraError("Cámara ocupada. Jugando solo con mouse/touch.");
+            setCameraError("La cámara está ocupada (otro navegador o pestaña). Jugando modo manual.");
+            if (mounted) setIsARLoading(false);
         } else {
-            setCameraError("Error al iniciar cámara. Se requiere permiso o hardware disponible.");
+            console.warn("Camera error:", err);
+            if (mounted) setIsARLoading(false);
         }
       } finally {
         if (mounted) setIsARLoading(false);
@@ -514,16 +525,15 @@ const App: React.FC = () => {
       const isRed = s.userColor === 'red';
       
       if (rawHand.current.isDetected) {
-        // Suavizado adaptativo para respuesta fluida a movimientos rápidos
-        const lerpFactor = 0.45; 
+        const lerpFactor = 0.5; 
         smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * lerpFactor;
         smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * lerpFactor;
         
         pinchBuffer.current.push(rawHand.current.isPinching);
-        if (pinchBuffer.current.length > 6) pinchBuffer.current.shift();
+        if (pinchBuffer.current.length > 5) pinchBuffer.current.shift();
         
-        const isPinchSteady = pinchBuffer.current.filter(b => b).length >= 4;
-        const isReleaseSteady = pinchBuffer.current.filter(b => !b).length >= 4;
+        const isPinchSteady = pinchBuffer.current.filter(b => b).length >= 3;
+        const isReleaseSteady = pinchBuffer.current.filter(b => !b).length >= 3;
 
         if (isPinchSteady && !grabbedRef.current && s.turn === s.userColor && !s.winner && !s.isBlocked && !isMenuOpen) {
           const zone = getZone(smoothHand.current.x, smoothHand.current.y, isRed);
@@ -660,7 +670,9 @@ const App: React.FC = () => {
     });
   };
 
-  const acceptInvite = () => setView('PLAYING');
+  const acceptInvite = () => {
+      setView('PLAYING');
+  };
 
   const exitGame = () => {
     clearRoomURL();
