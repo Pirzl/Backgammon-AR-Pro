@@ -193,12 +193,20 @@ const App: React.FC = () => {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
+  // --- URL CLEANUP UTILITY ---
+  const clearRoomURL = useCallback(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('room')) {
+      url.searchParams.delete('room');
+      window.history.replaceState({}, document.title, url.pathname);
+    }
+  }, []);
+
   // --- MULTIJUGADOR SYNC ENGINE ---
   const broadcastState = useCallback((newState: Partial<GameState>) => {
     if (syncChannel.current && stateRef.current.gameMode === 'ONLINE') {
       const { grabbed, userColor, isHost, roomID, boardOpacity, cameraOpacity, onlineOpponentConnected, ...syncData } = newState as any;
-      // Send only the relevant game data, not the local UI preferences
-      syncChannel.current.postMessage({ type: 'STATE_SYNC', payload: syncData.points ? newState : syncData });
+      syncChannel.current.postMessage({ type: 'STATE_SYNC', payload: syncData });
     }
   }, []);
 
@@ -231,7 +239,7 @@ const App: React.FC = () => {
           setState(s => ({
             ...s,
             ...payload,
-            userColor: s.userColor, // Local settings are sacred
+            userColor: s.userColor, 
             isHost: s.isHost,
             roomID: s.roomID,
             boardOpacity: s.boardOpacity,
@@ -245,7 +253,7 @@ const App: React.FC = () => {
     }
   }, [state.roomID]);
 
-  // Host auto-entry
+  // Auto-entry for host
   useEffect(() => {
     if (state.isHost && state.onlineOpponentConnected && view === 'INVITE_SENT') {
       setView('PLAYING');
@@ -371,7 +379,6 @@ const App: React.FC = () => {
   };
 
   const getPos = useCallback((idx: number, isUserRed: boolean) => {
-    // Flip 180 degrees visually if user is red
     const vIdx = isUserRed ? 23 - idx : idx;
     const isTop = vIdx >= 12;
     const relIdx = isTop ? 23 - vIdx : vIdx;
@@ -382,8 +389,6 @@ const App: React.FC = () => {
 
   const getZone = useCallback((x: number, y: number, isUserRed: boolean) => {
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50;
-    // Off zone is to the left for White, to the right for Red in this 180 flip?
-    // Let's keep off zone simple: outside the board
     if (x < xBase - 10 || x > xBase + 910) return { type: 'off' };
     if (Math.abs(x - (xBase + 450)) < 60) return { type: 'bar' };
     for (let i = 0; i < 24; i++) {
@@ -488,11 +493,8 @@ const App: React.FC = () => {
         const pos = getPos(i, isRed);
         const canMoveThisPoint = s.turn === s.userColor && s.movesLeft.length > 0 && s.points[i].checkers.includes(s.turn);
         const isTarget = grabbedRef.current && s.movesLeft.some(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, i, d));
-        
-        // Base triangle colors
         ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.95)' : 'rgba(190, 160, 110, 0.8)';
         if (isTarget) ctx.fillStyle = 'rgba(251, 191, 36, 0.5)';
-        
         ctx.beginPath(); 
         ctx.moveTo(pos.x - 35, pos.y); 
         ctx.lineTo(pos.x + 35, pos.y); 
@@ -509,9 +511,6 @@ const App: React.FC = () => {
       
       ['white', 'red'].forEach(p => {
         const c = s.bar[p as Player]; 
-        // Bar position also depends on perspective? 
-        // For White, bar checkers for them at the bottom. For Red, bar checkers for them at bottom too.
-        // Let's stick to: My checkers at bottom bar, opponent at top bar.
         const isMyBar = p === s.userColor;
         const vY = isMyBar ? CANVAS_HEIGHT - 120 : 120;
         const canMoveBar = s.turn === s.userColor && s.movesLeft.length > 0 && p === s.turn;
@@ -521,7 +520,6 @@ const App: React.FC = () => {
         }
       });
 
-      // Off zones
       for(let i=0; i<s.off.white; i++) drawCh(ctx, isRed ? CANVAS_WIDTH - 80 : 80, isRed ? BOARD_PADDING + 40 + i*15 : CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15, 'white');
       for(let i=0; i<s.off.red; i++) drawCh(ctx, isRed ? CANVAS_WIDTH - 80 : 80, isRed ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'red');
       
@@ -722,7 +720,7 @@ const App: React.FC = () => {
                  )}
               </div>
            </div>
-           <button onClick={() => { setView('HOME'); setState(s => ({ ...s, roomID: '' })); }} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
+           <button onClick={() => { setView('HOME'); clearRoomURL(); setState(s => ({ ...s, roomID: '' })); }} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button>
         </div>
       )}
 
@@ -759,7 +757,7 @@ const App: React.FC = () => {
                   <p className="text-white/40 font-black uppercase tracking-widest text-xs mb-12 italic">Victoria</p>
                   <div className="flex flex-col gap-4 w-80 mx-auto">
                     <button onClick={() => resetGame(state.gameMode)} className="bg-yellow-600 text-black font-black py-6 rounded-3xl uppercase text-xl shadow-4xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button>
-                    <button onClick={() => { resetGame(); setView('HOME'); }} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button>
+                    <button onClick={() => { resetGame(); clearRoomURL(); setView('HOME'); }} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button>
                   </div>
                 </div>
               </div>
@@ -782,7 +780,7 @@ const App: React.FC = () => {
                 </div>
                 <div className="pt-10 flex flex-col gap-3">
                   <button onClick={() => { resetGame(state.gameMode); setIsMenuOpen(false); }} className="w-full bg-yellow-600/10 py-5 rounded-2xl text-yellow-600 font-black text-xs uppercase border border-yellow-600/20 hover:bg-yellow-600 hover:text-black transition-all">Reiniciar</button>
-                  <button onClick={() => { resetGame(); setView('HOME'); setIsMenuOpen(false); }} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
+                  <button onClick={() => { resetGame(); clearRoomURL(); setView('HOME'); setIsMenuOpen(false); }} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
                 </div>
              </div>
           </aside>
