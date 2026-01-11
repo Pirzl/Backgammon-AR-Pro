@@ -187,6 +187,7 @@ const App: React.FC = () => {
   const grabbedRef = useRef<GrabbedInfo | null>(null);
   const peerRef = useRef<any>(null);
   const connRef = useRef<any>(null);
+  const handshakeInterval = useRef<any>(null);
 
   const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
@@ -214,24 +215,48 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- MULTIPLAYER P2P (PEERJS) ROBUSTO ---
+  // --- MULTIPLAYER P2P (PEERJS) MEJORADO PARA CROSS-BROWSER ---
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
-        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 6)}`;
+        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 8)}`;
         const peer = new (window as any).Peer(peerID, { 
             debug: 0,
-            config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] } 
+            config: { 
+                'iceServers': [
+                    { 'urls': 'stun:stun.l.google.com:19302' },
+                    { 'urls': 'stun:stun1.l.google.com:19302' },
+                    { 'urls': 'stun:stun2.l.google.com:19302' }
+                ] 
+            } 
         });
         peerRef.current = peer;
 
         peer.on('open', () => {
             if (!state.isHost) {
-                const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
-                setupConnection(conn);
-                conn.on('open', () => {
-                    // El invitado avisa que está listo
-                    conn.send({ type: 'GUEST_HELLO' });
-                });
+                const initiateConnection = () => {
+                    const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
+                    setupConnection(conn);
+                    
+                    conn.on('open', () => {
+                        // Handshake persistente: avisar hasta recibir respuesta
+                        if (handshakeInterval.current) clearInterval(handshakeInterval.current);
+                        handshakeInterval.current = setInterval(() => {
+                            if (conn.open) {
+                                conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
+                            } else {
+                                clearInterval(handshakeInterval.current);
+                            }
+                        }, 1000);
+                        // Primer envío inmediato
+                        conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
+                    });
+                    
+                    conn.on('error', (err: any) => {
+                        console.warn("Connection error, retrying...", err);
+                        setTimeout(initiateConnection, 2000);
+                    });
+                };
+                initiateConnection();
             }
         });
 
@@ -246,49 +271,70 @@ const App: React.FC = () => {
             conn.on('data', (data: any) => {
                 const { type, payload } = data;
                 
-                // El Host recibe el saludo y envía el estado
+                // HOST: Recibe saludo del invitado
                 if (type === 'GUEST_HELLO' && stateRef.current.isHost) {
-                    setState(s => ({ ...s, onlineOpponentConnected: true }));
+                    // Solo actualizar si no estábamos conectados o si es un nuevo handshake
+                    setState(s => {
+                        if (!s.onlineOpponentConnected) {
+                            return { ...s, onlineOpponentConnected: true };
+                        }
+                        return s;
+                    });
+                    // El host SIEMPRE responde con el estado actual al recibir un saludo
                     conn.send({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
                 }
 
-                // El Invitado recibe el ACK y entra al juego
+                // GUEST: Recibe confirmación del host
                 if (type === 'HANDSHAKE_ACK') {
+                    if (handshakeInterval.current) {
+                        clearInterval(handshakeInterval.current);
+                        handshakeInterval.current = null;
+                    }
                     setState(s => ({ 
                       ...payload, 
                       onlineOpponentConnected: true, 
                       isHost: false, 
                       userColor: 'red',
-                      roomID: stateRef.current.roomID // Mantener mi ID de sala
+                      roomID: stateRef.current.roomID // Asegurar que el ID no se pierda
                     }));
                     setView('PLAYING');
                 }
 
-                // Sincronización continua
+                // SYNC: Actualización de estado de juego
                 if (type === 'STATE_SYNC') {
                     setState(s => ({
                       ...s, ...payload,
-                      userColor: s.userColor, isHost: s.isHost, roomID: s.roomID,
-                      boardOpacity: s.boardOpacity, cameraOpacity: s.cameraOpacity,
+                      userColor: s.userColor, 
+                      isHost: s.isHost, 
+                      roomID: s.roomID,
+                      boardOpacity: s.boardOpacity, 
+                      cameraOpacity: s.cameraOpacity,
                       onlineOpponentConnected: true
                     }));
                 }
             });
-            conn.on('close', () => setState(s => ({ ...s, onlineOpponentConnected: false })));
+
+            conn.on('close', () => {
+                setState(s => ({ ...s, onlineOpponentConnected: false }));
+                if (handshakeInterval.current) clearInterval(handshakeInterval.current);
+            });
         };
 
-        return () => { if (peer) peer.destroy(); };
+        return () => { 
+            if (peer) peer.destroy(); 
+            if (handshakeInterval.current) clearInterval(handshakeInterval.current);
+        };
     }
   }, [state.roomID, state.gameMode]);
 
-  // Transición automática del Host cuando el rival se conecta
+  // Asegurar transición del Host a la pantalla de juego
   useEffect(() => {
-    if (state.isHost && state.onlineOpponentConnected && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY')) {
-      setView('PLAYING');
+    if (state.isHost && state.onlineOpponentConnected && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY' || view === 'HOME')) {
+        setView('PLAYING');
     }
   }, [state.onlineOpponentConnected, view, state.isHost]);
 
-  // Manejo de URL al inicio
+  // Manejo de carga inicial vía URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
@@ -363,10 +409,10 @@ const App: React.FC = () => {
         await cameraInstance.start();
       } catch (err: any) {
         if (err.name === 'NotReadableError' || err.name === 'AbortError' || err.message?.includes('Could not start')) {
-            setCameraError("La cámara está ocupada (otro navegador o pestaña). Jugando modo manual.");
+            setCameraError("La cámara está ocupada por otra pestaña o aplicación. Jugando en modo manual.");
             if (mounted) setIsARLoading(false);
         } else {
-            console.warn("Camera error:", err);
+            console.warn("Camera access failed:", err);
             if (mounted) setIsARLoading(false);
         }
       } finally {
