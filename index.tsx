@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
+import mqtt from 'mqtt';
 
 // --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
 window.addEventListener('error', (e) => {
@@ -196,7 +197,8 @@ const App: React.FC = () => {
   const smoothHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
   const pinchBuffer = useRef<boolean[]>([]);
   const grabbedRef = useRef<GrabbedInfo | null>(null);
-  const socket = useRef<WebSocket | null>(null);
+  const clientRef = useRef<any>(null);
+  const clientId = useRef(`bg-client-${Math.random().toString(16).slice(2)}`);
 
   const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
@@ -220,64 +222,68 @@ const App: React.FC = () => {
 
   // --- MULTIJUGADOR SYNC ENGINE ---
   const broadcastState = useCallback((newState: Partial<GameState>) => {
-    if (socket.current?.readyState === WebSocket.OPEN && stateRef.current.gameMode === 'ONLINE') {
-      const { grabbed, userColor, isHost, roomID, boardOpacity, cameraOpacity, onlineOpponentConnected, ...syncData } = newState as any;
-      const message = JSON.stringify({ type: 'STATE_SYNC', payload: syncData, room: stateRef.current.roomID });
-      socket.current.send(message);
+    if (clientRef.current?.connected && stateRef.current.gameMode === 'ONLINE') {
+        const topic = `backgammon-ar-pro/${stateRef.current.roomID}`;
+        const { grabbed, userColor, isHost, roomID, boardOpacity, cameraOpacity, onlineOpponentConnected, ...syncData } = newState as any;
+        const message = JSON.stringify({ type: 'STATE_SYNC', payload: syncData, senderId: clientId.current });
+        clientRef.current.publish(topic, message);
     }
   }, []);
 
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
-      const ws = new WebSocket(`wss://socketsbay.com/wss/v2/1/demo/`);
-      socket.current = ws;
+        const client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
+        clientRef.current = client;
 
-      ws.onopen = () => {
-        // Use a small delay to ensure the server is ready to receive the message
-        setTimeout(() => {
-          if (!stateRef.current.isHost) {
-            ws.send(JSON.stringify({ type: 'HANDSHAKE', room: stateRef.current.roomID }));
-          }
-        }, 100);
-      };
+        const topic = `backgammon-ar-pro/${state.roomID}`;
 
-      ws.onmessage = (event) => {
-        try {
-          const { type, payload, room } = JSON.parse(event.data);
-          if (room !== stateRef.current.roomID) return;
+        client.on('connect', () => {
+            client.subscribe(topic, (err) => {
+                if (!err && !stateRef.current.isHost) {
+                    const handshakeMsg = JSON.stringify({ type: 'HANDSHAKE', senderId: clientId.current });
+                    client.publish(topic, handshakeMsg);
+                }
+            });
+        });
 
-          if (type === 'HANDSHAKE' && stateRef.current.isHost) {
-            setState(s => ({ ...s, onlineOpponentConnected: true }));
-            const ackPayload = { ...stateRef.current };
-            ws.send(JSON.stringify({ type: 'HANDSHAKE_ACK', payload: ackPayload, room: stateRef.current.roomID }));
-          } else if (type === 'HANDSHAKE_ACK' && !stateRef.current.isHost) {
-            setState(s => ({
-              ...payload,
-              onlineOpponentConnected: true,
-              isHost: false,
-              userColor: 'red',
-              boardOpacity: s.boardOpacity,
-              cameraOpacity: s.cameraOpacity,
-            }));
-            setView('PLAYING');
-          } else if (type === 'STATE_SYNC') {
-            setState(s => ({
-              ...s,
-              ...payload,
-              onlineOpponentConnected: true // Keep opponent as connected
-            }));
-          }
-        } catch (error) {
-          console.error("Failed to parse WebSocket message:", error);
-        }
-      };
+        client.on('message', (receivedTopic, message) => {
+            if (receivedTopic === topic) {
+                try {
+                    const parsed = JSON.parse(message.toString());
+                    if (parsed.senderId === clientId.current) return; // Ignore own messages
 
-      return () => {
-        ws.close();
-        socket.current = null;
-      };
+                    const { type, payload } = parsed;
+
+                    if (type === 'HANDSHAKE' && stateRef.current.isHost) {
+                        setState(s => ({ ...s, onlineOpponentConnected: true }));
+                        const ackPayload = { ...stateRef.current };
+                        const ackMsg = JSON.stringify({ type: 'HANDSHAKE_ACK', payload: ackPayload, senderId: clientId.current });
+                        client.publish(topic, ackMsg);
+                    } else if (type === 'HANDSHAKE_ACK' && !stateRef.current.isHost) {
+                        setState(s => ({
+                            ...payload,
+                            onlineOpponentConnected: true,
+                            isHost: false,
+                            userColor: 'red',
+                            boardOpacity: s.boardOpacity,
+                            cameraOpacity: s.cameraOpacity,
+                        }));
+                        setView('PLAYING');
+                    } else if (type === 'STATE_SYNC') {
+                        setState(s => ({ ...s, ...payload, onlineOpponentConnected: true }));
+                    }
+                } catch (e) {
+                    console.error("Failed to parse MQTT message:", e);
+                }
+            }
+        });
+
+        return () => {
+            client.end();
+            clientRef.current = null;
+        };
     }
-  }, [state.roomID, state.gameMode]);
+}, [state.roomID, state.gameMode]);
 
   // Auto-entry for host
   useEffect(() => {
@@ -328,12 +334,21 @@ const App: React.FC = () => {
     const camera = new CameraClass(videoRef.current, { onFrame: async () => { if (mounted) await hands.send({ image: videoRef.current! }); }, width: 1280, height: 720 });
 
     const startAR = async () => {
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Camera start timed out')), 10000)
+      );
+
       try {
-        await camera.start();
+        await Promise.race([camera.start(), timeoutPromise]);
         if (mounted) setIsARLoading(false);
       } catch (err) {
         console.error("Camera access error:", err);
-        alert("No se pudo acceder a la cámara. Por favor, asegúrese de haber otorgado los permisos necesarios y que su cámara no esté siendo utilizada por otra aplicación.");
+        if (err.message === 'Camera start timed out') {
+            alert("La cámara tardó demasiado en iniciarse. Por favor, inténtelo de nuevo.");
+        } else {
+            alert("No se pudo acceder a la cámara. Por favor, asegúrese de haber otorgado los permisos necesarios y que su cámara no esté siendo utilizada por otra aplicación.");
+        }
+
         if (mounted) {
           setIsARStarted(false);
           setIsARLoading(true);
@@ -659,13 +674,8 @@ const App: React.FC = () => {
   };
 
   const acceptInvite = () => {
-    if (socket.current?.readyState === WebSocket.OPEN) {
-      socket.current.send(JSON.stringify({ type: 'HANDSHAKE', room: stateRef.current.roomID }));
-    }
-    // No longer necessary to setView here, HANDSHAKE_ACK will do it.
-    // setView('PLAYING');
-    // Instead, we can give some feedback:
-    setState(s => ({...s, isBlocked: true})); // using isBlocked to show a "connecting" state
+    // The connection is handled by the useEffect. We just provide feedback.
+    setState(s => ({...s, isBlocked: true}));
   };
 
   return (
