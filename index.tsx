@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 // --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
 window.addEventListener('error', (e) => {
-  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js'];
+  const ignored = ['WebSocket', 'message channel closed', 'favicon.ico', 'refresh.js', 'NotReadableError'];
   if (ignored.some(msg => e.message?.includes(msg))) {
     e.stopImmediatePropagation();
     return false;
@@ -193,7 +193,6 @@ const App: React.FC = () => {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  // --- URL CLEANUP UTILITY ---
   const clearRoomURL = useCallback(() => {
     const url = new URL(window.location.href);
     if (url.searchParams.has('room')) {
@@ -202,10 +201,9 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- MULTIJUGADOR SYNC ENGINE ---
   const broadcastState = useCallback((newState: Partial<GameState>) => {
     if (syncChannel.current && stateRef.current.gameMode === 'ONLINE') {
-      const { grabbed, userColor, isHost, roomID, boardOpacity, cameraOpacity, onlineOpponentConnected, ...syncData } = newState as any;
+      const { grabbed, ...syncData } = newState as any;
       syncChannel.current.postMessage({ type: 'STATE_SYNC', payload: syncData });
     }
   }, []);
@@ -253,14 +251,12 @@ const App: React.FC = () => {
     }
   }, [state.roomID]);
 
-  // Auto-entry for host
   useEffect(() => {
     if (state.isHost && state.onlineOpponentConnected && view === 'INVITE_SENT') {
       setView('PLAYING');
     }
   }, [state.onlineOpponentConnected, view, state.isHost]);
 
-  // Handle URL invite
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
@@ -288,9 +284,15 @@ const App: React.FC = () => {
   useEffect(() => {
     if (view !== 'PLAYING') return;
     let mounted = true;
+    let cameraInstance: any = null;
     const HandsClass = (window as any).Hands;
     const CameraClass = (window as any).Camera;
-    if (!HandsClass || !CameraClass || !videoRef.current) return;
+    
+    if (!HandsClass || !CameraClass || !videoRef.current) {
+        setIsARLoading(false);
+        return;
+    }
+
     const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
     hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
     hands.onResults((results: any) => {
@@ -299,9 +301,28 @@ const App: React.FC = () => {
       const dist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
       rawHand.current = { x: (1 - l[8].x) * CANVAS_WIDTH, y: l[8].y * CANVAS_HEIGHT, isPinching: dist < PINCH_THRESHOLD, isDetected: true };
     });
-    const camera = new CameraClass(videoRef.current, { onFrame: async () => { if (mounted) await hands.send({ image: videoRef.current! }); }, width: 1280, height: 720 });
-    camera.start().then(() => { if (mounted) setIsARLoading(false); });
-    return () => { mounted = false; camera.stop(); hands.close(); };
+
+    const initCamera = async () => {
+        try {
+            cameraInstance = new CameraClass(videoRef.current, { 
+                onFrame: async () => { if (mounted) await hands.send({ image: videoRef.current! }); }, 
+                width: 1280, height: 720 
+            });
+            await cameraInstance.start();
+            if (mounted) setIsARLoading(false);
+        } catch (err) {
+            console.warn("Camera access failed, falling back to mouse-only mode.", err);
+            if (mounted) setIsARLoading(false);
+        }
+    };
+
+    initCamera();
+
+    return () => { 
+        mounted = false; 
+        if (cameraInstance) cameraInstance.stop(); 
+        hands.close(); 
+    };
   }, [view]);
 
   const rollDice = useCallback((forced: boolean = false) => {
@@ -407,9 +428,20 @@ const App: React.FC = () => {
     if (s.turn !== s.userColor) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
-    const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
-    const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+    
+    const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
+    const rectAspect = rect.width / rect.height;
+    let scale, ox, oy;
+    if (rectAspect > canvasAspect) {
+        scale = rect.height / CANVAS_HEIGHT;
+        ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+        oy = 0;
+    } else {
+        scale = rect.width / CANVAS_WIDTH;
+        ox = 0;
+        oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+    }
+
     const x = (clientX - rect.left - ox) / scale;
     const y = (clientY - rect.top - oy) / scale;
     
@@ -428,9 +460,20 @@ const App: React.FC = () => {
     const s = stateRef.current;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
-    const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
-    const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+
+    const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
+    const rectAspect = rect.width / rect.height;
+    let scale, ox, oy;
+    if (rectAspect > canvasAspect) {
+        scale = rect.height / CANVAS_HEIGHT;
+        ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+        oy = 0;
+    } else {
+        scale = rect.width / CANVAS_WIDTH;
+        ox = 0;
+        oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+    }
+
     const x = (clientX - rect.left - ox) / scale;
     const y = (clientY - rect.top - oy) / scale;
     
@@ -495,40 +538,27 @@ const App: React.FC = () => {
         const isTarget = grabbedRef.current && s.movesLeft.some(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, i, d));
         ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.95)' : 'rgba(190, 160, 110, 0.8)';
         if (isTarget) ctx.fillStyle = 'rgba(251, 191, 36, 0.5)';
-        ctx.beginPath(); 
-        ctx.moveTo(pos.x - 35, pos.y); 
-        ctx.lineTo(pos.x + 35, pos.y); 
-        ctx.lineTo(pos.x, pos.isTop ? pos.y + 280 : pos.y - 280); 
-        ctx.fill();
-
+        ctx.beginPath(); ctx.moveTo(pos.x - 35, pos.y); ctx.lineTo(pos.x + 35, pos.y); ctx.lineTo(pos.x, pos.isTop ? pos.y + 280 : pos.y - 280); ctx.fill();
         s.points[i].checkers.forEach((p, idx) => { 
           if (grabbedRef.current?.fromIndex === i && idx === s.points[i].checkers.length - 1) return; 
           drawCh(ctx, pos.x, pos.isTop ? pos.y + 42 + idx * 42 : pos.y - 42 - idx * 42, p, false, canMoveThisPoint && idx === s.points[i].checkers.length - 1); 
         });
       }
-
       ctx.fillStyle = '#0a0a0a'; ctx.fillRect(xB + 450 - 32, BOARD_PADDING, 64, CANVAS_HEIGHT - BOARD_PADDING * 2);
-      
       ['white', 'red'].forEach(p => {
-        const c = s.bar[p as Player]; 
-        const isMyBar = p === s.userColor;
-        const vY = isMyBar ? CANVAS_HEIGHT - 120 : 120;
+        const c = s.bar[p as Player]; const isMyBar = p === s.userColor; const vY = isMyBar ? CANVAS_HEIGHT - 120 : 120;
         const canMoveBar = s.turn === s.userColor && s.movesLeft.length > 0 && p === s.turn;
         for(let i=0; i<c; i++) { 
           if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === c - 1) continue; 
           drawCh(ctx, xB + 450, vY + (isMyBar ? -i*42 : i*42), p as Player, false, canMoveBar && i === c - 1); 
         }
       });
-
       for(let i=0; i<s.off.white; i++) drawCh(ctx, isRed ? CANVAS_WIDTH - 80 : 80, isRed ? BOARD_PADDING + 40 + i*15 : CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15, 'white');
       for(let i=0; i<s.off.red; i++) drawCh(ctx, isRed ? CANVAS_WIDTH - 80 : 80, isRed ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'red');
-      
       if (s.dice.length > 0) s.dice.forEach((d, i) => drawD(ctx, xB + 450 + (i === 0 ? -180 : 180), CANVAS_HEIGHT/2, d, s.turn));
-      
       const drawX = grabbedRef.current?.isMouse ? mousePos.current.x : smoothHand.current.x;
       const drawY = grabbedRef.current?.isMouse ? mousePos.current.y : smoothHand.current.y;
       if (grabbedRef.current) drawCh(ctx, drawX, drawY, grabbedRef.current.player, true);
-      
       if (rawHand.current.isDetected) {
         ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 12 : 24, 0, Math.PI * 2);
         ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : 'white'; ctx.lineWidth = 4; ctx.stroke();
@@ -541,29 +571,22 @@ const App: React.FC = () => {
   const drawCh = (ctx: CanvasRenderingContext2D, x: number, y: number, p: Player, g = false, pulse = false) => {
     ctx.save(); 
     if (g) { ctx.shadowBlur = 40; ctx.shadowColor = COLORS.gold; }
-    else if (pulse) { 
-      ctx.shadowBlur = Math.max(0, 15 + Math.sin(Date.now() / 200) * 10); 
-      ctx.shadowColor = COLORS.gold; 
-    }
+    else if (pulse) { ctx.shadowBlur = Math.max(0, 15 + Math.sin(Date.now() / 200) * 10); ctx.shadowColor = COLORS.gold; }
     const gr = ctx.createRadialGradient(x - 8, y - 8, 2, x, y, CHECKER_RADIUS);
     if (p === 'white') { gr.addColorStop(0, '#fff'); gr.addColorStop(1, '#ccc'); } else { gr.addColorStop(0, '#f55'); gr.addColorStop(1, '#a00'); }
     ctx.beginPath(); ctx.arc(x, y, CHECKER_RADIUS, 0, Math.PI * 2); ctx.fillStyle = gr; ctx.fill(); ctx.restore();
   };
 
   const drawD = (ctx: CanvasRenderingContext2D, x: number, y: number, v: number, p: Player) => {
-    ctx.save(); ctx.fillStyle = p === 'white' ? '#fff' : '#f44';
-    ctx.beginPath(); 
+    ctx.save(); ctx.fillStyle = p === 'white' ? '#fff' : '#f44'; ctx.beginPath(); 
     if (typeof (ctx as any).roundRect === 'function') { (ctx as any).roundRect(x - 40, y - 40, 80, 80, 15); } 
     else { ctx.rect(x - 40, y - 40, 80, 80); }
-    ctx.fill();
-    ctx.fillStyle = p === 'white' ? '#000' : '#fff';
+    ctx.fill(); ctx.fillStyle = p === 'white' ? '#000' : '#fff';
     const ds: Record<number, number[][]> = { 1: [[0,0]], 2: [[-22,-22], [22,22]], 3: [[-22,-22], [0,0], [22,22]], 4: [[-22,-22], [22,-22], [-22,22], [22,22]], 5: [[-22,-22], [22,-22], [0,0], [-22,22], [22,22]], 6: [[-22,-22], [22,-22], [-22,0], [22,0], [-22,22], [22,22]] };
     const points = ds[v] || [];
-    points.forEach((pt: number[]) => { ctx.beginPath(); ctx.arc(x + pt[0], y + pt[1], 7, 0, Math.PI * 2); ctx.fill(); }); 
-    ctx.restore();
+    points.forEach((pt: number[]) => { ctx.beginPath(); ctx.arc(x + pt[0], y + pt[1], 7, 0, Math.PI * 2); ctx.fill(); }); ctx.restore();
   };
 
-  // IA Logic
   useEffect(() => {
     if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING' && !isAiProcessing) {
       setIsAiProcessing(true);
@@ -595,7 +618,7 @@ const App: React.FC = () => {
       };
       runAILogic();
     }
-  }, [state.turn, state.dice.length, state.movesLeft.length, isAiProcessing, view, state.gameMode]);
+  }, [state.turn, state.dice.length, state.movesLeft.length, isAiProcessing, view, state.gameMode, rollDice, passTurn]);
 
   const generateRoom = () => {
     const id = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -612,25 +635,32 @@ const App: React.FC = () => {
   };
 
   const acceptInvite = () => {
-    if (syncChannel.current) {
-      syncChannel.current.postMessage({ type: 'HANDSHAKE' });
-    }
+    if (syncChannel.current) syncChannel.current.postMessage({ type: 'HANDSHAKE' });
     setView('PLAYING');
   };
 
   return (
     <div className="w-full h-full bg-black relative flex flex-col overflow-hidden" 
-         onMouseMove={(e) => {
-           const rect = canvasRef.current?.getBoundingClientRect();
-           if (!rect) return;
-           const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
-           const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
-           const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
-           mousePos.current.x = (e.clientX - rect.left - ox) / scale;
-           mousePos.current.y = (e.clientY - rect.top - oy) / scale;
-         }}
          onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY)}
          onMouseUp={(e) => handlePointerUp(e.clientX, e.clientY)}
+         onMouseMove={(e) => {
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT;
+            const rectAspect = rect.width / rect.height;
+            let scale, ox, oy;
+            if (rectAspect > canvasAspect) {
+                scale = rect.height / CANVAS_HEIGHT;
+                ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+                oy = 0;
+            } else {
+                scale = rect.width / CANVAS_WIDTH;
+                ox = 0;
+                oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+            }
+            mousePos.current.x = (e.clientX - rect.left - ox) / scale;
+            mousePos.current.y = (e.clientY - rect.top - oy) / scale;
+         }}
          onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
          onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
       
@@ -696,7 +726,6 @@ const App: React.FC = () => {
                 <h3 className="text-3xl font-black text-white italic uppercase mb-2">¡SALA CREADA!</h3>
                 <p className="text-white/40 text-xs font-black uppercase tracking-widest px-8 leading-relaxed">Envía el link a tu oponente.</p>
               </div>
-              
               <div className="space-y-4">
                 <div className="bg-black/40 p-4 rounded-2xl border border-white/5 text-yellow-600 font-mono font-bold text-xl break-all">
                   {`${window.location.origin}${window.location.pathname}?room=${state.roomID}`}
@@ -705,7 +734,6 @@ const App: React.FC = () => {
                   {copyFeedback ? '¡LINK COPIADO!' : 'COPIAR LINK DE INVITACIÓN'}
                 </button>
               </div>
-
               <div className="pt-4 flex flex-col items-center">
                  {state.onlineOpponentConnected ? (
                    <div className="animate-in fade-in duration-500">
@@ -727,25 +755,21 @@ const App: React.FC = () => {
       {view === 'PLAYING' && (
         <>
           <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md">
-            <button onClick={() => setIsMenuOpen(true)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner active:scale-95 transition-all">
+            <button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(true); }} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner active:scale-95 transition-all">
               <div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div>
             </button>
             <div className="flex gap-4 items-center">
-              {state.turn === state.userColor && history.length > 0 && <button onClick={undoMove} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}
-              
+              {state.turn === state.userColor && history.length > 0 && <button onClick={(e) => { e.stopPropagation(); undoMove(); }} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}
               <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${state.turn === state.userColor ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
                 {state.turn === state.userColor ? 'TU TURNO' : (state.gameMode === 'AI' ? 'IA PENSANDO...' : 'ESPERANDO RIVAL...')}
               </div>
-              
-              <button onClick={() => rollDice()} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className={`bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all ${state.turn === state.userColor && state.movesLeft.length === 0 ? 'pulse-gold shadow-glow' : ''}`}>Lanzar</button>
+              <button onClick={(e) => { e.stopPropagation(); rollDice(); }} disabled={state.movesLeft.length > 0 || state.turn !== state.userColor || !!state.winner} className={`bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all ${state.turn === state.userColor && state.movesLeft.length === 0 ? 'pulse-gold shadow-glow' : ''}`}>Lanzar</button>
             </div>
           </header>
-
           <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">
             {isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse">Iniciando AR...</div>}
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted />
             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
-            
             {state.winner && (
               <div className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-700">
                 <ConfettiRain />
@@ -756,31 +780,30 @@ const App: React.FC = () => {
                   </h1>
                   <p className="text-white/40 font-black uppercase tracking-widest text-xs mb-12 italic">Victoria</p>
                   <div className="flex flex-col gap-4 w-80 mx-auto">
-                    <button onClick={() => resetGame(state.gameMode)} className="bg-yellow-600 text-black font-black py-6 rounded-3xl uppercase text-xl shadow-4xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button>
-                    <button onClick={() => { resetGame(); clearRoomURL(); setView('HOME'); }} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button>
+                    <button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); }} className="bg-yellow-600 text-black font-black py-6 rounded-3xl uppercase text-xl shadow-4xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button>
+                    <button onClick={(e) => { e.stopPropagation(); resetGame(); clearRoomURL(); setView('HOME'); }} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button>
                   </div>
                 </div>
               </div>
             )}
           </main>
-          
           <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[300] border-r border-stone-800 transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col shadow-4xl backdrop-blur-3xl`}>
              <div className="flex justify-between items-center mb-10 pb-6 border-b border-white/5">
                 <h3 className="text-white font-black text-2xl uppercase italic tracking-tighter">OPCIONES</h3>
-                <button onClick={() => setIsMenuOpen(false)} className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-600 text-white font-bold text-xl hover:bg-red-500 transition-colors shadow-lg">✕</button>
+                <button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(false); }} className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-600 text-white font-bold text-xl hover:bg-red-500 transition-colors shadow-lg">✕</button>
              </div>
              <div className="space-y-10 flex-1">
                 <div className="space-y-4">
                   <div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Tablero</span><span>{Math.round(state.boardOpacity * 100)}%</span></div>
-                  <input type="range" min="0" max="1" step="0.01" value={state.boardOpacity} onChange={(e) => setState(s => ({...s, boardOpacity: parseFloat(e.target.value)}))} className="w-full accent-yellow-600" />
+                  <input type="range" min="0" max="1" step="0.01" value={state.boardOpacity} onChange={(e) => setState(s => ({...s, boardOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" />
                 </div>
                 <div className="space-y-4">
                   <div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Cámara</span><span>{Math.round(state.cameraOpacity * 100)}%</span></div>
-                  <input type="range" min="0" max="1" step="0.01" value={state.cameraOpacity} onChange={(e) => setState(s => ({...s, cameraOpacity: parseFloat(e.target.value)}))} className="w-full accent-yellow-600" />
+                  <input type="range" min="0" max="1" step="0.01" value={state.cameraOpacity} onChange={(e) => setState(s => ({...s, cameraOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" />
                 </div>
                 <div className="pt-10 flex flex-col gap-3">
-                  <button onClick={() => { resetGame(state.gameMode); setIsMenuOpen(false); }} className="w-full bg-yellow-600/10 py-5 rounded-2xl text-yellow-600 font-black text-xs uppercase border border-yellow-600/20 hover:bg-yellow-600 hover:text-black transition-all">Reiniciar</button>
-                  <button onClick={() => { resetGame(); clearRoomURL(); setView('HOME'); setIsMenuOpen(false); }} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
+                  <button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); setIsMenuOpen(false); }} className="w-full bg-yellow-600/10 py-5 rounded-2xl text-yellow-600 font-black text-xs uppercase border border-yellow-600/20 hover:bg-yellow-600 hover:text-black transition-all">Reiniciar</button>
+                  <button onClick={(e) => { e.stopPropagation(); resetGame(); clearRoomURL(); setView('HOME'); setIsMenuOpen(false); }} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
                 </div>
              </div>
           </aside>
