@@ -9,14 +9,19 @@
     <title>B-GAMMON AR | Pro</title>
     
     <script>
-      // Silenciador de errores de HMR/WebSocket que causan ruido en la consola
+      // Auditoría Jules: Silenciador de errores robusto para evitar bloqueos por HMR
       window.addEventListener('error', (e) => {
-        if (e.message.includes('WebSocket') || e.message.includes('refresh.js')) {
-          e.stopImmediatePropagation();
+        try {
+          const msg = e.message || (e.error && e.error.message) || "";
+          if (typeof msg === 'string' && (msg.includes('WebSocket') || msg.includes('refresh.js') || msg.includes('sockjs'))) {
+            e.stopImmediatePropagation();
+          }
+        } catch (err) {
+          // Fallback silencioso
         }
       }, true);
 
-      // Limpieza de Service Workers previos que pueden causar 404 por caché agresiva
+      // Limpieza de Service Workers para evitar 404 por caché de versiones anteriores
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
       }
@@ -25,7 +30,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
     
-    <!-- Mediapipe y PeerJS -->
+    <!-- Librerías de Visión y Conectividad -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
@@ -37,8 +42,9 @@
             overflow: hidden; touch-action: none;
         }
         .shadow-glow { box-shadow: 0 0 20px rgba(251, 191, 36, 0.3); }
-        .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
-        canvas { filter: drop-shadow(0 0 10px rgba(0,0,0,0.5)); }
+        .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+        canvas { filter: drop-shadow(0 0 10px rgba(0,0,0,0.4)); }
+        video { transform: scaleX(-1); }
     </style>
 
     <script type="importmap">
@@ -55,7 +61,7 @@
 </head>
 <body>
     <div id="root"></div>
-    <!-- Usamos ruta relativa sin barra inicial para máxima compatibilidad -->
-    <script type="module" src="index.tsx"></script>
+    <!-- Jules Fix: Ruta relativa explícita para evitar 404 en subrutas/query params -->
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>
