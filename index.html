@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>B-GAMMON AR PRO</title>
+    <title>B-GAMMON AR ULTIMATE</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
@@ -27,11 +27,10 @@
             z-index: 10; pointer-events: none;
         }
         .ui-layer { position: relative; z-index: 20; height: 100%; display: flex; flex-direction: column; }
-        .glass { background: rgba(0,0,0,0.8); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.1); }
-        .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
-        
-        /* Fix para evitar flickering en móviles */
-        * { -webkit-tap-highlight-color: transparent; }
+        .glass { background: rgba(0,0,0,0.85); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); }
+        .shadow-glow { box-shadow: 0 0 40px rgba(251, 191, 36, 0.4); }
+        input[type="range"] { appearance: none; background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px; }
+        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; background: #fbbf24; border-radius: 50%; cursor: pointer; }
     </style>
 
     <script type="importmap">
@@ -48,6 +47,271 @@
 </head>
 <body>
     <div id="root"></div>
-    <script type="module" src="/index.tsx"></script>
+
+    <script type="module">
+        import React, { useState, useEffect, useRef, useCallback } from 'react';
+        import ReactDOM from 'react-dom/client';
+
+        const CANVAS_WIDTH = 1200;
+        const CANVAS_HEIGHT = 800;
+        const COLORS = {
+          white: '#FFFFFF',
+          red: '#FF3B30',
+          gold: '#FFCC00',
+          board: 'rgba(15, 15, 15, 0.9)',
+          point1: '#222222',
+          point2: '#333333'
+        };
+
+        const getInitialState = () => {
+          const p = Array(24).fill(null).map(() => ({ checkers: [] }));
+          const add = (idx, n, col) => { for (let i = 0; i < n; i++) p[idx].checkers.push(col); };
+          add(0, 2, 'red'); add(11, 5, 'red'); add(16, 3, 'red'); add(18, 5, 'red');
+          add(23, 2, 'white'); add(12, 5, 'white'); add(7, 3, 'white'); add(5, 5, 'white');
+          return {
+            points: p, bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
+            turn: 'white', dice: [], movesLeft: [], winner: null,
+            gameMode: 'LOCAL', userColor: 'white', roomID: ''
+          };
+        };
+
+        const App = () => {
+          const [view, setView] = useState('HOME');
+          const [state, setState] = useState(getInitialState());
+          const [camOpacity, setCamOpacity] = useState(0.4);
+          const [showSettings, setShowSettings] = useState(false);
+          const [selectedPoint, setSelectedPoint] = useState(null);
+
+          const canvasRef = useRef(null);
+          const videoRef = useRef(null);
+          const peerRef = useRef(null);
+          const connRef = useRef(null);
+
+          // --- SISTEMA DE COORDENADAS UNIFICADO ---
+          const getCoords = (i) => {
+            const isTop = i >= 12;
+            const colIdx = isTop ? i - 12 : 11 - i;
+            const xBase = 110 + colIdx * 80;
+            const x = colIdx >= 6 ? xBase + 60 : xBase;
+            const yBase = isTop ? 50 : CANVAS_HEIGHT - 50;
+            const yTip = isTop ? 380 : CANVAS_HEIGHT - 380;
+            return { x, yBase, yTip, isTop };
+          };
+
+          useEffect(() => {
+            if (view === 'PLAYING') {
+              navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+                .then(s => { if (videoRef.current) videoRef.current.srcObject = s; })
+                .catch(e => console.error("Cam Error", e));
+            }
+          }, [view]);
+
+          const draw = useCallback(() => {
+            const ctx = canvasRef.current?.getContext('2d');
+            if (!ctx) return;
+            ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            
+            // Tablero
+            ctx.fillStyle = COLORS.board;
+            ctx.fillRect(50, 50, CANVAS_WIDTH - 100, CANVAS_HEIGHT - 100);
+            ctx.fillStyle = 'rgba(255,255,255,0.05)';
+            ctx.fillRect(CANVAS_WIDTH/2 - 30, 50, 60, CANVAS_HEIGHT - 100);
+
+            // Puntos
+            for (let i = 0; i < 24; i++) {
+              const { x, yBase, yTip, isTop } = getCoords(i);
+              ctx.fillStyle = selectedPoint === i ? COLORS.gold : (i % 2 === 0 ? COLORS.point1 : COLORS.point2);
+              ctx.beginPath();
+              ctx.moveTo(x - 36, yBase); ctx.lineTo(x + 36, yBase); ctx.lineTo(x, yTip);
+              ctx.fill();
+
+              state.points[i].checkers.forEach((col, j) => {
+                ctx.fillStyle = COLORS[col];
+                ctx.beginPath();
+                const y = isTop ? 90 + (j * 45) : CANVAS_HEIGHT - 90 - (j * 45);
+                ctx.arc(x, y, 23, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = 2; ctx.stroke();
+              });
+            }
+
+            // Barra
+            ['white', 'red'].forEach((col, idx) => {
+              for(let i=0; i < state.bar[col]; i++) {
+                ctx.fillStyle = COLORS[col]; ctx.beginPath();
+                ctx.arc(CANVAS_WIDTH/2, idx === 0 ? 280 - (i*40) : 520 + (i*40), 23, 0, Math.PI * 2);
+                ctx.fill(); ctx.stroke();
+              }
+            });
+
+            // Dados
+            state.dice.forEach((d, i) => {
+              const dx = CANVAS_WIDTH/2 + 130 + (i * 100), dy = CANVAS_HEIGHT/2 - 45;
+              ctx.fillStyle = '#fff'; ctx.beginPath();
+              ctx.roundRect ? ctx.roundRect(dx, dy, 80, 80, 15) : ctx.fillRect(dx, dy, 80, 80);
+              ctx.fill();
+              ctx.fillStyle = '#000'; ctx.font = 'bold 44px Inter'; ctx.textAlign = 'center';
+              ctx.fillText(d.toString(), dx + 40, dy + 55);
+            });
+          }, [state, selectedPoint]);
+
+          useEffect(() => {
+            const h = requestAnimationFrame(draw);
+            return () => cancelAnimationFrame(h);
+          }, [draw]);
+
+          const sync = (ns) => {
+            if (connRef.current?.open) connRef.current.send({ type: 'STATE', payload: ns });
+            setState(ns);
+          };
+
+          const handleMove = (from, to, die) => {
+            const ns = JSON.parse(JSON.stringify(state));
+            const p = ns.turn;
+            if (from === 'bar') ns.bar[p]--; else ns.points[from].checkers.pop();
+            if (to === 'off') ns.off[p]++;
+            else {
+              const dest = ns.points[to];
+              if (dest.checkers.length === 1 && dest.checkers[0] !== p) {
+                ns.bar[dest.checkers[0]]++;
+                dest.checkers = [p];
+              } else dest.checkers.push(p);
+            }
+            ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
+            if (ns.off[p] === 15) ns.winner = p;
+            if (!ns.winner && ns.movesLeft.length === 0) {
+                ns.turn = ns.turn === 'white' ? 'red' : 'white';
+                ns.dice = [];
+            }
+            sync(ns);
+            setSelectedPoint(null);
+          };
+
+          const onBoardClick = (e) => {
+            if (state.turn !== state.userColor && state.gameMode === 'ONLINE') return;
+            const rect = canvasRef.current.getBoundingClientRect();
+            const x = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+            const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+
+            if (Math.abs(x - CANVAS_WIDTH/2) < 40) {
+                if (state.bar[state.turn] > 0) setSelectedPoint('bar');
+                return;
+            }
+
+            let clicked = -1;
+            for (let i = 0; i < 24; i++) {
+              const coords = getCoords(i);
+              if (Math.abs(x - coords.x) < 40 && ((coords.isTop && y < 400) || (!coords.isTop && y > 400))) {
+                clicked = i; break;
+              }
+            }
+
+            if (clicked !== -1) {
+              if (selectedPoint !== null) {
+                const die = state.movesLeft.find(d => {
+                  const target = selectedPoint === 'bar' 
+                    ? (state.turn === 'red' ? d - 1 : 24 - d)
+                    : (state.turn === 'red' ? selectedPoint + d : selectedPoint - d);
+                  return target === clicked;
+                });
+                if (die) handleMove(selectedPoint, clicked, die);
+                else if (state.points[clicked].checkers.includes(state.turn)) setSelectedPoint(clicked);
+              } else if (state.points[clicked].checkers.includes(state.turn)) {
+                setSelectedPoint(clicked);
+              }
+            }
+          };
+
+          const initP2P = (rid, isHost) => {
+            const peer = new Peer(`bg-ar-v4-${rid}-${isHost ? 'host' : 'guest-' + Math.floor(Math.random()*1000)}`);
+            peerRef.current = peer;
+            peer.on('open', () => {
+              if (!isHost) {
+                const c = peer.connect(`bg-ar-v4-${rid}-host`, { reliable: true });
+                connRef.current = c;
+                c.on('open', () => { setView('PLAYING'); c.send({ type: 'REQ' }); });
+                c.on('data', d => d.type === 'STATE' && setState(s => ({ ...s, ...d.payload, userColor: 'red' })));
+              } else {
+                peer.on('connection', c => {
+                  connRef.current = c;
+                  c.on('data', d => {
+                    if (d.type === 'REQ') c.send({ type: 'STATE', payload: state });
+                    if (d.type === 'STATE') setState(s => ({ ...s, ...d.payload, userColor: 'white' }));
+                  });
+                  setView('PLAYING');
+                });
+              }
+            });
+          };
+
+          useEffect(() => {
+            const room = new URLSearchParams(window.location.search).get('room');
+            if (room) { setView('CONNECTING'); initP2P(room, false); }
+          }, []);
+
+          return React.createElement('div', { className: 'w-full h-full relative bg-black overflow-hidden' }, [
+            React.createElement('video', { key: 'vid', ref: videoRef, autoPlay: true, playsInline: true, muted: true, style: { opacity: camOpacity } }),
+            React.createElement('canvas', { key: 'can', ref: canvasRef, width: CANVAS_WIDTH, height: CANVAS_HEIGHT }),
+            React.createElement('div', { key: 'ui', className: 'ui-layer' }, [
+              view === 'HOME' && React.createElement('div', { className: 'flex-1 flex flex-col items-center justify-center space-y-8 bg-black z-50' }, [
+                React.createElement('h1', { className: 'text-7xl font-black italic tracking-tighter shadow-glow uppercase' }, 'B-GAMMON AR'),
+                React.createElement('button', { onClick: () => { setState(s => ({...s, gameMode: 'LOCAL'})); setView('PLAYING'); }, className: 'w-80 py-6 bg-white text-black font-black rounded-3xl uppercase text-lg' }, 'Local Game'),
+                React.createElement('button', { onClick: () => setView('LOBBY'), className: 'w-80 py-6 bg-zinc-800 text-white font-black rounded-3xl uppercase text-lg' }, 'Online PvP')
+              ]),
+              view === 'CONNECTING' && React.createElement('div', { className: 'flex-1 flex flex-col items-center justify-center bg-black/90 z-50' }, [
+                React.createElement('div', { className: 'w-16 h-16 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-6' }),
+                React.createElement('h2', { className: 'text-2xl font-black tracking-widest animate-pulse uppercase' }, 'Joining Room...')
+              ]),
+              view === 'LOBBY' && React.createElement('div', { className: 'flex-1 flex flex-col items-center justify-center p-8 bg-black z-50' }, [
+                React.createElement('button', { onClick: () => {
+                  const rid = Math.random().toString(36).substring(2, 7).toUpperCase();
+                  setState(s => ({ ...s, roomID: rid, gameMode: 'ONLINE', userColor: 'white' }));
+                  initP2P(rid, true); setView('INVITE');
+                }, className: 'bg-yellow-500 text-black font-black px-16 py-7 rounded-3xl uppercase text-xl shadow-glow' }, 'Create Room'),
+                React.createElement('button', { onClick: () => setView('HOME'), className: 'mt-8 text-white/30 font-bold' }, 'CANCEL')
+              ]),
+              view === 'INVITE' && React.createElement('div', { className: 'flex-1 flex flex-col items-center justify-center p-8 glass z-50' }, [
+                React.createElement('h2', { className: 'text-3xl font-black mb-8 italic uppercase' }, 'Room: ' + state.roomID),
+                React.createElement('div', { className: 'p-6 bg-white/5 rounded-3xl text-yellow-500 font-mono text-sm mb-12 select-all' }, window.location.origin + '/?room=' + state.roomID),
+                React.createElement('button', { onClick: () => { navigator.clipboard.writeText(window.location.origin + '/?room=' + state.roomID); alert("Link Copied!"); }, className: 'bg-white text-black font-black px-12 py-5 rounded-2xl uppercase' }, 'Copy Link')
+              ]),
+              view === 'PLAYING' && React.createElement('div', { className: 'flex-1 flex flex-col', onClick: onBoardClick }, [
+                React.createElement('header', { className: 'h-20 flex items-center justify-between px-8 glass border-b border-white/10' }, [
+                  React.createElement('div', { onClick: () => window.location.href = '/', className: 'font-black text-xs uppercase text-white/40 cursor-pointer' }, 'EXIT'),
+                  React.createElement('div', { className: 'px-6 py-2 bg-yellow-500 text-black font-black rounded-full text-xs shadow-glow uppercase' }, 'Turn: ' + (state.turn === 'white' ? 'White' : 'Red')),
+                  React.createElement('div', { className: 'flex gap-4' }, [
+                    React.createElement('button', { onClick: (e) => { e.stopPropagation(); setShowSettings(!showSettings); }, className: 'w-12 h-12 flex items-center justify-center bg-white/10 rounded-full text-xl' }, '⚙️'),
+                    React.createElement('button', { onClick: (e) => { e.stopPropagation(); if (state.movesLeft.length === 0) { const d1 = Math.floor(Math.random()*6)+1, d2 = Math.floor(Math.random()*6)+1; sync({...state, dice: [d1, d2], movesLeft: d1===d2 ? [d1,d1,d1,d1] : [d1,d2]}); } }, className: 'bg-white text-black font-black px-8 py-3 rounded-full text-xs uppercase shadow-xl' }, 'Roll Dice')
+                  ])
+                ]),
+                React.createElement('div', { className: 'flex-1 relative' }, [
+                  showSettings && React.createElement('div', { className: 'absolute top-6 right-8 w-72 p-8 glass rounded-[40px] space-y-6 z-[100]', onClick: e => e.stopPropagation() }, [
+                    React.createElement('h3', { className: 'text-xs font-black uppercase text-white/50 tracking-widest' }, 'AR Config'),
+                    React.createElement('div', { className: 'space-y-4' }, [
+                      React.createElement('label', { className: 'text-[10px] font-bold text-white/30 uppercase' }, 'Real World Visibility'),
+                      React.createElement('input', { type: 'range', min: 0, max: 1, step: 0.1, value: camOpacity, onChange: e => setCamOpacity(parseFloat(e.target.value)), className: 'w-full' })
+                    ]),
+                    React.createElement('button', { onClick: () => setShowSettings(false), className: 'w-full py-4 bg-yellow-500 text-black font-black rounded-2xl text-xs uppercase' }, 'Apply')
+                  ])
+                ]),
+                React.createElement('footer', { className: 'h-24 flex items-center justify-between px-16 glass border-t border-white/10' }, [
+                  React.createElement('div', { className: 'flex items-center gap-4' }, [
+                    React.createElement('div', { className: 'w-5 h-5 rounded-full bg-white shadow-glow' }),
+                    React.createElement('span', { className: 'text-2xl font-black italic' }, state.off.white + '/15')
+                  ]),
+                  React.createElement('div', { className: 'flex gap-4' }, state.movesLeft.map((m, i) => React.createElement('div', { key: i, className: 'w-14 h-14 bg-yellow-500 text-black font-black flex items-center justify-center rounded-2xl text-xl shadow-glow animate-bounce' }, m))),
+                  React.createElement('div', { className: 'flex items-center gap-4' }, [
+                    React.createElement('span', { className: 'text-2xl font-black italic' }, state.off.red + '/15'),
+                    React.createElement('div', { className: 'w-5 h-5 rounded-full bg-red-600 shadow-[0_0_20px_rgba(220,38,38,0.6)]' })
+                  ])
+                ])
+              ])
+            ])
+          ]);
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(App));
+    </script>
 </body>
 </html>
