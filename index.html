@@ -9,7 +9,7 @@
     <title>Backgammon AR Pro | Online</title>
     
     <script>
-      // Limpieza preventiva de Service Workers para evitar errores de caché corrupta
+      // Limpieza preventiva de Service Workers
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.getRegistrations().then(regs => {
           for (let reg of regs) reg.unregister();
@@ -26,8 +26,8 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     
-    <!-- PeerJS para multijugador real P2P -->
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- PeerJS desde CDNJS para mayor estabilidad -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 
     <style>
         body, html, #root {
@@ -69,7 +69,6 @@
         .safe-top { padding-top: env(safe-area-inset-top); }
         .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
         
-        /* Optimización de renderizado para Safari */
         canvas, video {
             -webkit-transform: translate3d(0,0,0);
             transform: translate3d(0,0,0);

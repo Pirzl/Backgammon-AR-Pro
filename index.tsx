@@ -58,7 +58,7 @@ const playSound = (type: 'dice' | 'checker' | 'win') => {
 export type Player = 'white' | 'red';
 export type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING' | 'CONNECTING';
 export type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
-export type ConnectionStatus = 'IDLE' | 'CONNECTING' | 'PEER_FOUND' | 'SYNCING' | 'READY';
+export type ConnectionStatus = 'IDLE' | 'CONNECTING' | 'PEER_FOUND' | 'SYNCING' | 'READY' | 'ERROR';
 
 export interface Point { checkers: Player[]; }
 export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; offsetY: number; }
@@ -95,7 +95,7 @@ const BOARD_PADDING = 40;
 const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 26;
 const RELATIVE_PINCH_THRESHOLD = 0.5; 
-const STABILIZATION_FRAMES = 3; // Frames para confirmar gesto
+const STABILIZATION_FRAMES = 5; // Más frames para estabilidad total
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
 const initialPoints = (): Point[] => {
@@ -216,49 +216,74 @@ const App: React.FC = () => {
 
   const broadcastState = useCallback((newState: Partial<GameState>) => {
     if (connRef.current && stateRef.current.gameMode === 'ONLINE' && connRef.current.open) {
-        // En modo ONLINE, el Host es la autoridad. El Guest solo envía intenciones de movimiento.
         connRef.current.send({ type: 'STATE_SYNC', payload: newState });
     }
   }, []);
 
-  // --- MULTIPLAYER P2P (PEERJS) ROBUSTO ---
+  // --- HANDSHAKE ROBUSTO ---
   useEffect(() => {
     if (state.roomID && state.gameMode === 'ONLINE') {
-        const peerID = state.isHost ? `bgammon-${state.roomID}-host` : `bgammon-${state.roomID}-guest-${Math.random().toString(36).substring(2, 6)}`;
+        const idBase = `bgammon-${state.roomID}`;
+        const peerID = state.isHost ? `${idBase}-host` : `${idBase}-guest-${Math.random().toString(36).substring(2, 6)}`;
+        
         if (peerRef.current) peerRef.current.destroy();
         
         const peer = new (window as any).Peer(peerID, { 
-            debug: 0,
+            debug: 1, // Habilitar debug para ver errores de red
             config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] } 
         });
         peerRef.current = peer;
 
-        peer.on('open', () => { 
-          if (!state.isHost) attemptConnection(); 
-          setState(s => ({...s, connStatus: 'CONNECTING'}));
+        peer.on('open', (id: string) => { 
+          console.log('Peer abierto con ID:', id);
+          if (!state.isHost) {
+            setState(s => ({...s, connStatus: 'CONNECTING'}));
+            attemptConnection(); 
+          } else {
+            setState(s => ({...s, connStatus: 'IDLE'})); // Host espera conexión
+          }
+        });
+
+        peer.on('error', (err: any) => {
+          console.error('Error de PeerJS:', err.type, err);
+          if (err.type === 'peer-unavailable' && !stateRef.current.isHost) {
+            // El host no está disponible, reintentar
+            setTimeout(attemptConnection, 3000);
+          } else if (err.type === 'id-taken' && stateRef.current.isHost) {
+            // ID de host ya tomado (quizás una sesión anterior sigue activa)
+            // No hacemos nada, esperamos que expire o usamos un ID con sufijo si fuera crítico
+          }
+          setState(s => ({...s, connStatus: 'ERROR'}));
         });
 
         const attemptConnection = () => {
             if (!peer.open || stateRef.current.isHost) return;
-            const conn = peer.connect(`bgammon-${state.roomID}-host`, { reliable: true });
+            console.log('Intentando conectar al host...');
+            const conn = peer.connect(`${idBase}-host`, { reliable: true });
             setupConnection(conn);
         };
 
         peer.on('connection', (conn: any) => { 
-          if (stateRef.current.isHost) setupConnection(conn); 
+          if (stateRef.current.isHost) {
+            console.log('Recibida conexión de invitado');
+            setupConnection(conn); 
+          }
         });
 
         const setupConnection = (conn: any) => {
             connRef.current = conn;
             
             conn.on('open', () => {
+                console.log('Canal de datos abierto');
                 setState(s => ({...s, connStatus: 'PEER_FOUND'}));
                 if (!stateRef.current.isHost) {
+                    // El invitado inicia el handshake enviando HELLO periódicamente hasta recibir ACK
                     if (handshakeInterval.current) clearInterval(handshakeInterval.current);
                     handshakeInterval.current = setInterval(() => {
-                        if (conn.open && stateRef.current.connStatus !== 'READY') 
+                        if (conn.open && stateRef.current.connStatus !== 'READY') {
                           conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
-                    }, 1500);
+                        }
+                    }, 1000);
                     conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
                 }
             });
@@ -268,30 +293,28 @@ const App: React.FC = () => {
                 const currentS = stateRef.current;
 
                 if (type === 'GUEST_HELLO' && currentS.isHost) {
+                    console.log('Handshake: Recibido HELLO de invitado');
                     setState(s => ({ ...s, connStatus: 'SYNCING' }));
                     conn.send({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
                 }
                 
                 if (type === 'HANDSHAKE_ACK' && !currentS.isHost) {
+                    console.log('Handshake: Recibido ACK de host');
                     if (handshakeInterval.current) { clearInterval(handshakeInterval.current); handshakeInterval.current = null; }
                     setState(s => ({ 
                       ...payload, 
                       connStatus: 'READY', 
                       isHost: false, 
                       userColor: 'red', 
-                      roomID: s.roomID,
-                      boardOpacity: s.boardOpacity,
-                      cameraOpacity: s.cameraOpacity
+                      roomID: s.roomID
                     }));
                     setView('PLAYING');
                 }
 
                 if (type === 'STATE_SYNC') {
-                    // El Guest acepta el estado del Host como autoridad única.
-                    // Si el Host recibe un sync del Guest, actualiza según las reglas.
                     setState(s => ({
                       ...s, ...payload,
-                      userColor: s.userColor, isHost: s.isHost, roomID: s.roomID, isFlipped: s.isFlipped,
+                      userColor: s.userColor, isHost: s.isHost, roomID: s.roomID,
                       boardOpacity: s.boardOpacity, cameraOpacity: s.cameraOpacity, connStatus: 'READY'
                     }));
                 }
@@ -301,8 +324,11 @@ const App: React.FC = () => {
                 }
             });
 
-            conn.on('close', () => setState(s => ({ ...s, connStatus: 'CONNECTING' })));
-            conn.on('error', () => { if (!stateRef.current.isHost) setTimeout(attemptConnection, 3000); });
+            conn.on('close', () => {
+              console.log('Conexión cerrada');
+              setState(s => ({ ...s, connStatus: 'CONNECTING' }));
+              if (!stateRef.current.isHost) setTimeout(attemptConnection, 3000);
+            });
         };
 
         return () => { if (handshakeInterval.current) clearInterval(handshakeInterval.current); };
@@ -316,19 +342,9 @@ const App: React.FC = () => {
     }
   }, [state.connStatus, view, state.isHost]);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room');
-    if (room && view === 'HOME') {
-      setState(s => ({ ...s, roomID: room.toUpperCase(), userColor: 'red', gameMode: 'ONLINE', isHost: false }));
-      setView('ONLINE_LOBBY');
-    }
-  }, []);
-
   const [isARLoading, setIsARLoading] = useState(true);
   const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
 
-  // --- FIX: Explicitly type newState to avoid widening string literals to 'string' in resetGame ---
   const resetGame = useCallback((mode: GameMode = 'LOCAL') => {
     setHistory([]); setIsAiProcessing(false); grabbedRef.current = null;
     const newState: GameState = { 
@@ -347,7 +363,7 @@ const App: React.FC = () => {
     const initAR = async () => {
       if (!HandsClass || !CameraClass || !videoRef.current) { if (mounted) setIsARLoading(false); return; }
       const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-      hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.65, minTrackingConfidence: 0.7 });
+      hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
       hands.onResults((results: any) => {
         if (!mounted || !results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
         const l = results.multiHandLandmarks[0];
@@ -366,7 +382,7 @@ const App: React.FC = () => {
           width: 1280, height: 720 
         });
         await cameraInstance.start();
-      } catch (err: any) { setCameraError("Cámara ocupada."); if (mounted) setIsARLoading(false); } finally { if (mounted) setIsARLoading(false); }
+      } catch (err: any) { setCameraError("Error al iniciar cámara."); if (mounted) setIsARLoading(false); } finally { if (mounted) setIsARLoading(false); }
     };
     initAR(); return () => { mounted = false; if (cameraInstance) try { cameraInstance.stop(); } catch(e) {} };
   }, [view]);
@@ -433,7 +449,6 @@ const App: React.FC = () => {
 
   const getZone = useCallback((x: number, y: number, isUserRed: boolean, isFlipped: boolean) => {
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50;
-    
     for (let i = 0; i < 24; i++) {
       const pos = getPos(i, isUserRed, isFlipped);
       if (Math.abs(x - pos.x) < 40) {
@@ -441,12 +456,9 @@ const App: React.FC = () => {
         if (!pos.isTop && y > CANVAS_HEIGHT/2 - 80) return { type: 'point', index: i };
       }
     }
-    
     if (Math.abs(x - (xBase + 450)) < 40) return { type: 'bar' };
-    
-    // Bear-off logic: Siempre a la izquierda o margen exterior
+    // Bear-off logic: Siempre a la izquierda
     if (x < xBase - 10 || x > xBase + 910) return { type: 'off' };
-    
     return null;
   }, [getPos]);
 
@@ -495,10 +507,9 @@ const App: React.FC = () => {
       const ctx = canvasRef.current?.getContext('2d'); if (!ctx) return;
       const s = stateRef.current; const isRed = s.userColor === 'red';
       
-      // Estabilización de gestos AR
       if (rawHand.current.isDetected) {
-        smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.5;
-        smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.5;
+        smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.4;
+        smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.4;
         pinchBuffer.current.push(rawHand.current.isPinching); 
         if (pinchBuffer.current.length > STABILIZATION_FRAMES * 2) pinchBuffer.current.shift();
         
@@ -510,8 +521,7 @@ const App: React.FC = () => {
           if (zone?.type === 'bar' && s.bar[s.turn] > 0) { 
             grabbedRef.current = { player: s.turn, fromIndex: -1, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 }; 
             setState(p => ({ ...p, grabbed: grabbedRef.current })); 
-          }
-          else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) { 
+          } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) { 
             grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 }; 
             setState(p => ({ ...p, grabbed: grabbedRef.current })); 
           }
@@ -627,7 +637,6 @@ const App: React.FC = () => {
   const generateRoom = () => { const id = Math.random().toString(36).substring(2, 8).toUpperCase(); setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE', isHost: true, connStatus: 'IDLE' })); setView('INVITE_SENT'); };
   const copyInviteLink = () => navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`).then(() => { setCopyFeedback(true); setTimeout(() => setCopyFeedback(false), 2000); });
   
-  // --- FIX: Explicitly type and cast GameState literal to avoid widening 'white' to 'string' in exitGame ---
   const exitGame = () => { 
     if (handshakeInterval.current) clearInterval(handshakeInterval.current); 
     if (connRef.current) try { connRef.current.close(); } catch(e) {} 
@@ -656,7 +665,7 @@ const App: React.FC = () => {
 
       {view === 'ONLINE_LOBBY' && <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8"><h2 className="text-5xl font-black text-white mb-12 italic uppercase">Sala Online</h2><div className="bg-stone-900 p-10 rounded-[3rem] w-full max-w-md border border-white/10 shadow-2xl space-y-8">{!state.isHost && state.roomID ? <div className="text-center space-y-6"><p className="text-white/60 uppercase font-black text-xs tracking-widest">Has sido invitado a la sala</p><div className="text-5xl font-black text-yellow-600 bg-black/40 py-6 rounded-2xl border border-white/5">{state.roomID}</div><button onClick={() => setView('CONNECTING')} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all pulse-gold">Aceptar Reto</button></div> : <div className="flex flex-col gap-3"><button onClick={generateRoom} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all">Crear Nueva Sala</button><div className="relative"><div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div><div className="relative flex justify-center text-[10px]"><span className="bg-stone-900 px-4 text-white/20 font-black uppercase tracking-widest">o usa un código</span></div></div><input id="room-code-input" type="text" placeholder="Código de sala..." className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-white text-center font-bold outline-none focus:border-yellow-600 transition-all uppercase" /><button onClick={() => { const val = (document.getElementById('room-code-input') as HTMLInputElement)?.value; if(val) setState(s => ({ ...s, roomID: val.toUpperCase(), userColor: 'red', gameMode: 'ONLINE', isHost: false })); }} className="w-full bg-white/5 text-white/40 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse por Código</button></div>}</div><button onClick={exitGame} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Volver</button></div>}
 
-      {view === 'CONNECTING' && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center p-8"><div className="w-16 h-16 border-4 border-yellow-600 border-t-transparent rounded-full animate-spin mb-8"></div><p className="text-white font-black uppercase tracking-widest text-sm animate-pulse">Estableciendo conexión segura...</p><div className="text-white/20 text-[10px] uppercase font-black tracking-widest mt-2">{state.connStatus}</div><button onClick={exitGame} className="mt-12 text-white/30 text-[10px] uppercase underline">Cancelar</button></div>}
+      {view === 'CONNECTING' && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center p-8"><div className="w-16 h-16 border-4 border-yellow-600 border-t-transparent rounded-full animate-spin mb-8"></div><p className="text-white font-black uppercase tracking-widest text-sm animate-pulse">Estableciendo conexión segura...</p><div className="text-white/20 text-[10px] uppercase font-black tracking-widest mt-2">{state.connStatus === 'ERROR' ? 'Intentando reconectar...' : state.connStatus}</div><button onClick={exitGame} className="mt-12 text-white/30 text-[10px] uppercase underline">Cancelar</button></div>}
 
       {view === 'INVITE_SENT' && <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8"><div className="bg-stone-900 p-12 rounded-[4rem] w-full max-w-lg border border-white/10 shadow-4xl text-center space-y-10"><div className="w-24 h-24 bg-yellow-600/10 rounded-full flex items-center justify-center mx-auto animate-bounce"><span className="text-4xl">🔗</span></div><div><h3 className="text-3xl font-black text-white italic uppercase mb-2">¡SALA CREADA!</h3><p className="text-white/40 text-xs font-black uppercase tracking-widest px-8 leading-relaxed">Envía el link a tu oponente.</p></div><div className="space-y-4"><div className="bg-black/40 p-4 rounded-2xl border border-white/5 text-yellow-600 font-mono font-bold text-xl break-all">{`${window.location.origin}${window.location.pathname}?room=${state.roomID}`}</div><button onClick={copyInviteLink} className={`w-full py-5 rounded-2xl font-black uppercase transition-all shadow-xl ${copyFeedback ? 'bg-green-600 text-white' : 'bg-white text-black hover:bg-yellow-600 hover:text-white'}`}>{copyFeedback ? '¡LINK COPIADO!' : 'COPIAR LINK DE INVITACIÓN'}</button></div><div className="pt-4 flex flex-col items-center">{state.connStatus === 'READY' ? <div className="animate-in fade-in duration-500"><div className="text-green-500 font-black uppercase tracking-widest text-sm">¡RIVAL CONECTADO!</div><div className="text-white/40 text-[9px] font-bold animate-pulse uppercase mt-2">Sincronizando tablero...</div></div> : <div className="flex items-center gap-3 text-white/20 animate-pulse"><div className="w-2 h-2 bg-yellow-600 rounded-full"></div><span className="text-[10px] font-black uppercase tracking-widest">Esperando rival... ({state.connStatus})</span></div>}</div></div><button onClick={exitGame} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button></div>}
 
