@@ -2,41 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
-// --- SILENCIADOR DE ERRORES ---
-window.addEventListener('error', (e) => {
-  const ignored = ['WebSocket', 'PeerJS', 'ServiceWorker', 'refresh.js'];
-  if (ignored.some(msg => (e.message || '').includes(msg))) {
-    e.stopImmediatePropagation();
-    return false;
-  }
-}, true);
-
-// --- AUDIO ---
-const playSound = (type: 'dice' | 'checker' | 'win') => {
-  const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-  if (!AudioContext) return;
-  try {
-    const ctx = new AudioContext();
-    const now = ctx.currentTime;
-    if (type === 'dice') {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'noise' as any; // Simplified noise
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(); osc.stop(now + 0.1);
-    } else if (type === 'checker') {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.setValueAtTime(150, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(); osc.stop(now + 0.1);
-    }
-  } catch(e) {}
-};
-
-// --- CONSTANTS ---
+// --- CONFIGURACIÓN Y TIPOS ---
 const CANVAS_WIDTH = 1200;
 const CANVAS_HEIGHT = 700;
 const BOARD_PADDING = 40;
@@ -45,8 +11,7 @@ const CHECKER_RADIUS = 26;
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
 type Player = 'white' | 'red';
-type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING' | 'CONNECTING';
-type ConnectionStatus = 'IDLE' | 'CONNECTING' | 'WAITING_FOR_HOST' | 'SYNCING' | 'READY' | 'ERROR';
+type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
 
 interface Point { checkers: Player[]; }
 interface GameState {
@@ -57,253 +22,295 @@ interface GameState {
   dice: number[];
   movesLeft: number[];
   winner: Player | null;
-  gameMode: 'AI' | 'ONLINE' | 'LOCAL';
+  gameMode: GameMode;
   userColor: Player;
   roomID: string;
   isHost: boolean;
-  boardOpacity: number;
   cameraOpacity: number;
-  isFlipped: boolean;
-  connStatus: ConnectionStatus;
+  boardOpacity: number;
 }
 
 const initialPoints = (): Point[] => {
   const p = Array(24).fill(null).map(() => ({ checkers: [] as Player[] }));
   const add = (idx: number, n: number, col: Player) => { for(let i=0; i<n; i++) p[idx].checkers.push(col); };
+  // Setup estándar de Backgammon
   add(0, 2, 'red'); add(11, 5, 'red'); add(16, 3, 'red'); add(18, 5, 'red');
   add(23, 2, 'white'); add(12, 5, 'white'); add(7, 3, 'white'); add(5, 5, 'white');
   return p;
 };
 
-// --- APP ---
+// --- COMPONENTE PRINCIPAL ---
 const App: React.FC = () => {
-  const [view, setView] = useState<View>('HOME');
+  const [view, setView] = useState<'HOME' | 'LOBBY' | 'INVITE' | 'PLAYING' | 'CONNECTING'>('HOME');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [connLogs, setConnLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<string[]>([]);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<any>(null);
   const connRef = useRef<any>(null);
-  const stateRef = useRef<GameState>({
+  
+  const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
     turn: 'white', dice: [], movesLeft: [], winner: null, gameMode: 'LOCAL',
-    userColor: 'white', roomID: '', isHost: true, boardOpacity: 0.9,
-    cameraOpacity: 0.35, isFlipped: false, connStatus: 'IDLE'
+    userColor: 'white', roomID: '', isHost: true, cameraOpacity: 0.4, boardOpacity: 0.85
   });
 
-  const [state, setState] = useState<GameState>(stateRef.current);
+  const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  const addLog = (msg: string) => setConnLogs(prev => [...prev.slice(-2), msg]);
+  const addLog = (m: string) => setLogs(p => [...p.slice(-2), m]);
 
-  const broadcastState = useCallback((newState: Partial<GameState>) => {
-    if (connRef.current?.open && stateRef.current.gameMode === 'ONLINE') {
-      connRef.current.send({ type: 'STATE_UPDATE', payload: newState });
-    }
-  }, []);
+  // --- LÓGICA DE REGLAS ---
+  const getTargetIndex = (from: number, die: number, player: Player) => {
+    if (from === -1) return player === 'red' ? die - 1 : 24 - die;
+    return player === 'red' ? from + die : from - die;
+  };
 
-  const setupConnection = (conn: any) => {
-    connRef.current = conn;
-    
-    conn.on('open', () => {
-      addLog("¡Canal de datos abierto!");
-      setState(s => ({ ...s, connStatus: 'SYNCING' }));
-      // El Host envía el estado inicial solo si es host
-      if (stateRef.current.isHost) {
-        setTimeout(() => {
-            if (conn.open) conn.send({ type: 'INIT_SYNC', payload: stateRef.current });
-        }, 500);
-      }
-    });
-
-    conn.on('data', (data: any) => {
-      const { type, payload } = data;
-      if (type === 'INIT_SYNC' || type === 'STATE_UPDATE') {
-        setState(s => ({ 
-            ...s, ...payload, 
-            userColor: s.userColor, isHost: s.isHost, roomID: s.roomID, 
-            connStatus: 'READY' 
-        }));
-        if (view !== 'PLAYING') setView('PLAYING');
-      }
-      if (type === 'REQUEST_SYNC' && stateRef.current.isHost) {
-        conn.send({ type: 'STATE_UPDATE', payload: stateRef.current });
-      }
-    });
-
-    conn.on('close', () => {
-      addLog("Conexión perdida.");
-      setState(s => ({ ...s, connStatus: 'ERROR' }));
+  const isBearOffReady = (points: Point[], player: Player) => {
+    const homeRange = player === 'red' ? [18, 23] : [0, 5];
+    return points.every((p, i) => {
+      if (!p.checkers.includes(player)) return true;
+      return i >= homeRange[0] && i <= homeRange[1];
     });
   };
 
-  const initPeer = useCallback((roomID: string, asHost: boolean) => {
-    if (peerRef.current) peerRef.current.destroy();
-    
-    const id = asHost ? `bgammon-${roomID}-host` : `bgammon-${roomID}-guest-${Math.random().toString(36).substring(7)}`;
-    const peer = new (window as any).Peer(id, {
-        debug: 1,
-        config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] }
+  const canMove = (from: number, to: number | 'off', die: number, gs: GameState): boolean => {
+    const p = gs.turn;
+    if (!gs.movesLeft.includes(die)) return false;
+    if (gs.bar[p] > 0 && from !== -1) return false;
+
+    if (to === 'off') {
+      if (!isBearOffReady(gs.points, p)) return false;
+      const isExact = p === 'red' ? (from + die === 24) : (from - die === -1);
+      if (isExact) return true;
+      // Regla de ficha más lejana para bear-off
+      if (p === 'red' && from + die > 23) {
+        for(let i=18; i < from; i++) if(gs.points[i].checkers.includes('red')) return false;
+        return true;
+      }
+      if (p === 'white' && from - die < 0) {
+        for(let i=5; i > from; i--) if(gs.points[i].checkers.includes('white')) return false;
+        return true;
+      }
+      return false;
+    }
+
+    const target = gs.points[to as number];
+    if (target.checkers.length > 1 && target.checkers[0] !== p) return false;
+    return true;
+  };
+
+  const executeMove = (from: number, to: number | 'off', die: number) => {
+    setState(prev => {
+      const ns = JSON.parse(JSON.stringify(prev)) as GameState;
+      const p = ns.turn;
+      
+      // Remover
+      if (from === -1) ns.bar[p]--; else ns.points[from].checkers.pop();
+
+      // Colocar
+      if (to === 'off') ns.off[p]++;
+      else {
+        const dest = ns.points[to as number];
+        if (dest.checkers.length === 1 && dest.checkers[0] !== p) {
+          ns.bar[dest.checkers[0]]++;
+          dest.checkers = [p];
+        } else {
+          dest.checkers.push(p);
+        }
+      }
+
+      ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
+      
+      // Comprobar victoria
+      if (ns.off[p] === 15) ns.winner = p;
+
+      // Cambio de turno si no hay más movimientos
+      if (!ns.winner && ns.movesLeft.length === 0) {
+        ns.turn = ns.turn === 'white' ? 'red' : 'white';
+        ns.dice = [];
+        ns.movesLeft = [];
+      }
+
+      if (ns.gameMode === 'ONLINE' && connRef.current?.open) {
+        connRef.current.send({ type: 'STATE_UPDATE', payload: ns });
+      }
+      return ns;
     });
+  };
+
+  // --- INTELIGENCIA ARTIFICIAL (ROJO) ---
+  useEffect(() => {
+    if (state.gameMode === 'AI' && state.turn === 'red' && !state.winner) {
+      const timer = setTimeout(() => {
+        if (state.movesLeft.length === 0) {
+          rollDice();
+        } else {
+          // Buscar un movimiento válido
+          const possibleDice = [...state.movesLeft];
+          for (const die of possibleDice) {
+            // 1. Intentar salir de la barra
+            if (state.bar.red > 0) {
+              const to = getTargetIndex(-1, die, 'red');
+              if (canMove(-1, to, die, state)) {
+                executeMove(-1, to, die);
+                return;
+              }
+            }
+            // 2. Intentar Bear-off
+            if (isBearOffReady(state.points, 'red')) {
+              for (let i = 23; i >= 18; i--) {
+                if (state.points[i].checkers.includes('red') && canMove(i, 'off', die, state)) {
+                  executeMove(i, 'off', die);
+                  return;
+                }
+              }
+            }
+            // 3. Movimiento normal
+            for (let i = 0; i < 24; i++) {
+              if (state.points[i].checkers.includes('red')) {
+                const to = getTargetIndex(i, die, 'red');
+                if (to < 24 && canMove(i, to, die, state)) {
+                  executeMove(i, to, die);
+                  return;
+                }
+              }
+            }
+          }
+          // Si no hay movimientos posibles, saltar turno
+          setState(prev => ({ ...prev, turn: 'white', dice: [], movesLeft: [] }));
+        }
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [state.turn, state.movesLeft, state.gameMode]);
+
+  // --- MULTIPLAYER P2P ---
+  const connectToHost = (rid: string) => {
+    const conn = peerRef.current.connect(`bgammon-${rid}-host`, { reliable: true });
+    addLog(`Conectando a sala: ${rid}`);
+    conn.on('open', () => {
+      addLog("Conectado. Sincronizando...");
+      connRef.current = conn;
+      conn.on('data', (data: any) => {
+        if (data.type === 'INIT_SYNC' || data.type === 'STATE_UPDATE') {
+          setState(s => ({ ...s, ...data.payload, userColor: s.userColor, isHost: s.isHost, roomID: s.roomID }));
+          setView('PLAYING');
+        }
+      });
+    });
+  };
+
+  const initPeerConnection = (rid: string, isHost: boolean) => {
+    if (peerRef.current) peerRef.current.destroy();
+    const id = isHost ? `bgammon-${rid}-host` : `bgammon-${rid}-guest-${Math.random().toString(36).substring(5)}`;
+    const peer = new (window as any).Peer(id);
     peerRef.current = peer;
 
     peer.on('open', () => {
-      addLog(asHost ? "Esperando rival..." : "Conectando a sala...");
-      setState(s => ({ ...s, connStatus: asHost ? 'IDLE' : 'CONNECTING' }));
-      if (!asHost) {
-        const conn = peer.connect(`bgammon-${roomID}-host`, { reliable: true });
-        setupConnection(conn);
+      if (isHost) {
+        addLog("Sala abierta.");
+        peer.on('connection', (conn: any) => {
+          addLog("¡Rival conectado!");
+          connRef.current = conn;
+          conn.on('open', () => {
+            conn.send({ type: 'INIT_SYNC', payload: stateRef.current });
+          });
+          conn.on('data', (data: any) => {
+            if (data.type === 'STATE_UPDATE') setState(s => ({ ...s, ...data.payload, userColor: s.userColor }));
+          });
+        });
+      } else {
+        connectToHost(rid);
       }
     });
+  };
 
-    peer.on('connection', (conn: any) => {
-      if (asHost) {
-        addLog("Rival detectado.");
-        setupConnection(conn);
-      }
+  const rollDice = () => {
+    if (state.movesLeft.length > 0) return;
+    const d1 = Math.floor(Math.random() * 6) + 1;
+    const d2 = Math.floor(Math.random() * 6) + 1;
+    const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+    setState(prev => {
+      const ns = { ...prev, dice: [d1, d2], movesLeft: moves };
+      if (ns.gameMode === 'ONLINE' && connRef.current?.open) connRef.current.send({ type: 'STATE_UPDATE', payload: ns });
+      return ns;
     });
+  };
 
-    peer.on('error', (err: any) => {
-        addLog(`Error P2P: ${err.type}`);
-        if (err.type === 'peer-unavailable' && !asHost) {
-            setTimeout(() => initPeer(roomID, false), 3000);
-        }
-    });
-  }, []);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room');
-    if (room && view === 'HOME') {
-      const rid = room.toUpperCase();
-      setState(s => ({ ...s, roomID: rid, userColor: 'red', gameMode: 'ONLINE', isHost: false }));
-      initPeer(rid, false);
-      setView('CONNECTING');
-    }
-  }, [initPeer, view]);
-
-  // --- AR ---
-  useEffect(() => {
-    if (view !== 'PLAYING') return;
-    const Hands = (window as any).Hands;
-    const Camera = (window as any).Camera;
-    if (!Hands || !Camera || !videoRef.current) return;
-
-    const hands = new Hands({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
-    
-    const camera = new Camera(videoRef.current, { 
-      onFrame: async () => { if (videoRef.current) await hands.send({ image: videoRef.current }); },
-      width: 1280, height: 720 
-    });
-    camera.start();
-    return () => camera.stop();
-  }, [view]);
-
-  // --- RENDER ---
-  useEffect(() => {
-    if (view !== 'PLAYING') return;
-    const ctx = canvasRef.current?.getContext('2d');
-    if (!ctx) return;
-    let anim: number;
-
-    const render = () => {
-      ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      const s = stateRef.current;
-      const xB = (CANVAS_WIDTH - 900) / 2 + 50;
-      
-      // Fondo tablero
-      ctx.save(); ctx.globalAlpha = s.boardOpacity; ctx.fillStyle = '#1c1917'; ctx.fillRect(xB, BOARD_PADDING, 900, CANVAS_HEIGHT - BOARD_PADDING * 2); ctx.restore();
-
-      // Bear-off (Siempre a la izquierda)
-      ctx.fillStyle = 'rgba(255,255,255,0.05)';
-      ctx.fillRect(0, BOARD_PADDING, xB - 10, CANVAS_HEIGHT - BOARD_PADDING * 2);
-      
-      // Fichas retiradas
-      for(let i=0; i<s.off.white; i++) {
-        ctx.beginPath(); ctx.arc(40, CANVAS_HEIGHT - 60 - i*12, 20, 0, Math.PI*2); ctx.fillStyle = COLORS.white; ctx.fill();
-      }
-      for(let i=0; i<s.off.red; i++) {
-        ctx.beginPath(); ctx.arc(40, 60 + i*12, 20, 0, Math.PI*2); ctx.fillStyle = COLORS.red; ctx.fill();
-      }
-
-      // Dados
-      if (s.dice.length) {
-        ctx.fillStyle = s.turn === 'white' ? '#fff' : '#f22';
-        ctx.fillRect(xB + 400, CANVAS_HEIGHT/2 - 30, 60, 60);
-        ctx.fillRect(xB + 480, CANVAS_HEIGHT/2 - 30, 60, 60);
-      }
-
-      anim = requestAnimationFrame(render);
-    };
-    render(); return () => cancelAnimationFrame(anim);
-  }, [view]);
-
+  // --- UI RENDER ---
   return (
-    <div className="w-full h-full bg-black flex flex-col items-center justify-center overflow-hidden">
+    <div className="w-full h-full bg-black relative flex flex-col items-center justify-center font-sans overflow-hidden">
       {view === 'HOME' && (
-        <div className="text-center space-y-8 animate-in fade-in duration-700">
-          <h1 className="text-8xl font-black italic tracking-tighter">B-GAMMON</h1>
-          <div className="flex flex-col gap-4 w-64 mx-auto">
-            <button onClick={() => setView('ONLINE_LOBBY')} className="bg-white text-black font-black py-4 rounded-xl uppercase">Multijugador</button>
-            <button onClick={() => { setState(s => ({ ...s, gameMode: 'LOCAL' })); setView('PLAYING'); }} className="bg-stone-900 text-white/50 font-black py-4 rounded-xl text-xs uppercase">Local</button>
+        <div className="text-center animate-in fade-in zoom-in duration-500">
+          <h1 className="text-8xl font-black italic mb-12 tracking-tighter shadow-glow">B-GAMMON</h1>
+          <div className="flex flex-col gap-4 w-72 mx-auto">
+            <button onClick={() => { setState(s => ({ ...s, gameMode: 'AI' })); setView('PLAYING'); }} 
+                    className="bg-white text-black font-black py-5 rounded-2xl hover:bg-yellow-500 transition-all uppercase shadow-lg">Vs Máquina</button>
+            <button onClick={() => setView('LOBBY')} 
+                    className="bg-stone-800 text-white font-black py-5 rounded-2xl hover:bg-stone-700 transition-all uppercase">Multijugador</button>
+            <button onClick={() => { setState(s => ({ ...s, gameMode: 'LOCAL' })); setView('PLAYING'); }} 
+                    className="bg-stone-900 text-white/40 font-black py-4 rounded-xl text-xs uppercase">Local (2P)</button>
           </div>
         </div>
       )}
 
-      {view === 'ONLINE_LOBBY' && (
-        <div className="bg-stone-900 p-12 rounded-[3rem] border border-white/5 text-center space-y-6">
-          <h2 className="text-4xl font-black italic">SALA ONLINE</h2>
+      {view === 'LOBBY' && (
+        <div className="bg-stone-900 p-12 rounded-[3rem] border border-white/5 text-center space-y-8 animate-in slide-in-from-bottom duration-300">
+          <h2 className="text-4xl font-black italic uppercase">Modo Online</h2>
           <button onClick={() => {
             const rid = Math.random().toString(36).substring(7).toUpperCase();
             setState(s => ({ ...s, roomID: rid, isHost: true, gameMode: 'ONLINE' }));
-            initPeer(rid, true);
-            setView('INVITE_SENT');
-          }} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase">Crear Sala</button>
-          <button onClick={() => setView('HOME')} className="text-white/30 text-xs uppercase">Volver</button>
+            initPeerConnection(rid, true);
+            setView('INVITE');
+          }} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl">Crear Sala</button>
+          <button onClick={() => setView('HOME')} className="text-white/30 uppercase text-xs">Cancelar</button>
         </div>
       )}
 
-      {view === 'INVITE_SENT' && (
-        <div className="bg-stone-900 p-12 rounded-[4rem] border border-white/5 text-center space-y-8 max-w-lg">
-          <h3 className="text-2xl font-black italic">¡SALA LISTA!</h3>
-          <div className="bg-black/50 p-4 rounded-xl font-mono text-yellow-600 text-xs break-all">
+      {view === 'INVITE' && (
+        <div className="bg-stone-900 p-12 rounded-[3rem] border border-white/5 text-center space-y-8 animate-in zoom-in duration-300">
+          <h2 className="text-3xl font-black italic uppercase">Invitación</h2>
+          <div className="bg-black/50 p-4 rounded-xl font-mono text-yellow-500 text-[10px] break-all">
             {`${window.location.origin}${window.location.pathname}?room=${state.roomID}`}
           </div>
           <button onClick={() => {
             navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`);
-            setConnLogs(["¡Link copiado al portapapeles!"]);
-          }} className="w-full bg-white text-black font-black py-4 rounded-xl uppercase">Copiar Link</button>
-          <div className="space-y-2">
-            <p className="text-[10px] font-bold text-white/40 uppercase animate-pulse">Esperando conexión...</p>
-            {connLogs.map((log, i) => <div key={i} className="text-[9px] text-yellow-600/50 uppercase">{log}</div>)}
+            addLog("Link Copiado.");
+          }} className="w-full bg-white text-black font-black py-4 rounded-xl uppercase shadow-lg">Copiar Link</button>
+          <div className="pt-4 border-t border-white/5">
+            <p className="text-[10px] text-white/40 uppercase font-black animate-pulse">Esperando al oponente...</p>
+            {logs.map((l, i) => <p key={i} className="text-[9px] text-yellow-500/50 mt-1">{l}</p>)}
           </div>
         </div>
       )}
 
       {view === 'CONNECTING' && (
-        <div className="flex flex-col items-center gap-6">
-          <div className="w-12 h-12 border-4 border-yellow-600 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-sm font-black uppercase tracking-widest animate-pulse">Sincronizando Tablero...</p>
-          <div className="flex flex-col items-center">
-            {connLogs.map((log, i) => <div key={i} className="text-[10px] text-white/20 uppercase">{log}</div>)}
-          </div>
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mx-auto mb-6"></div>
+          <p className="text-white font-black uppercase tracking-widest text-sm animate-pulse">Estableciendo Conexión...</p>
         </div>
       )}
 
       {view === 'PLAYING' && (
         <div className="w-full h-full relative flex flex-col">
-          <header className="h-16 bg-stone-900/80 backdrop-blur flex items-center justify-between px-6 z-50">
-            <button onClick={() => setIsMenuOpen(true)} className="w-10 h-10 bg-stone-800 rounded-lg">☰</button>
-            <div className="bg-yellow-600 text-black px-6 py-1.5 rounded-full font-black text-[10px] uppercase">
-                {state.turn === state.userColor ? 'TU TURNO' : 'ESPERANDO...'}
+          <header className="h-16 bg-stone-900/90 border-b border-white/10 flex items-center justify-between px-8 z-50">
+            <button onClick={() => setIsMenuOpen(true)} className="w-10 h-10 bg-stone-800 rounded-lg flex items-center justify-center">☰</button>
+            <div className={`px-6 py-2 rounded-full font-black text-[11px] uppercase border transition-all ${state.turn === state.userColor ? 'bg-yellow-600 border-yellow-600 text-black shadow-glow' : 'text-white/20 border-white/10'}`}>
+              {state.turn === 'white' ? 'Blancas' : 'Rojas'} {state.turn === state.userColor ? '(Tú)' : ''}
             </div>
-            <button className="bg-white text-black px-6 py-1.5 rounded-full font-black text-[10px]">LANZAR</button>
+            <button onClick={rollDice} disabled={state.movesLeft.length > 0} className="bg-white text-black font-black px-6 py-2 rounded-full text-[10px] uppercase shadow-lg disabled:opacity-20">Lanzar</button>
           </header>
-          <main className="flex-1 relative">
-            <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-cover scale-x-[-1]" autoPlay playsInline muted />
-            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
+          <main className="flex-1 relative flex items-center justify-center">
+             <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover scale-x-[-1]" style={{ opacity: state.cameraOpacity }} autoPlay playsInline muted />
+             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-10 w-full h-full object-contain pointer-events-none" />
+             {state.winner && (
+               <div className="absolute inset-0 z-[100] bg-black/80 flex flex-col items-center justify-center backdrop-blur-md">
+                 <h2 className="text-6xl font-black italic text-white uppercase mb-8">¡Gana {state.winner === 'white' ? 'Blanco' : 'Rojo'}!</h2>
+                 <button onClick={() => window.location.reload()} className="bg-yellow-500 text-black font-black px-12 py-4 rounded-xl">Reiniciar</button>
+               </div>
+             )}
           </main>
         </div>
       )}
