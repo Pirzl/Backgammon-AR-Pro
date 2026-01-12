@@ -6,17 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>B-GAMMON AR | Pro</title>
+    <title>B-GAMMON AR PRO</title>
     
-    <script>
-      // Jules Audit: Silenciar ruidos de red y asegurar carga de scripts
-      window.addEventListener('error', (e) => {
-        if (e.message && (e.message.includes('WebSocket') || e.message.includes('refresh.js'))) {
-          e.stopImmediatePropagation();
-        }
-      }, true);
-    </script>
-
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
@@ -27,10 +18,16 @@
             background: #000; color: #fff; font-family: 'Inter', sans-serif;
             overflow: hidden; touch-action: none;
         }
-        .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
-        video { transform: scaleX(-1); object-fit: cover; width: 100%; height: 100%; position: absolute; }
-        canvas { touch-action: none; position: absolute; width: 100%; height: 100%; z-index: 10; }
-        .glass { background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); }
+        video { 
+            position: absolute; inset: 0; width: 100%; height: 100%; 
+            object-fit: cover; z-index: 0; transform: scaleX(-1);
+        }
+        canvas { 
+            position: absolute; inset: 0; width: 100%; height: 100%; 
+            z-index: 10; pointer-events: none;
+        }
+        .ui-layer { position: relative; z-index: 20; height: 100%; display: flex; flex-direction: column; }
+        .glass { background: rgba(0,0,0,0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
     </style>
 
     <script type="importmap">
@@ -47,7 +44,7 @@
 </head>
 <body>
     <div id="root"></div>
-    <!-- Usamos ruta absoluta /index.tsx para evitar el 404 al usar query params -->
-    <script type="module" src="/index.tsx"></script>
+    <!-- Forzamos la ruta raíz absoluta para evitar el 404 del invitado -->
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>
