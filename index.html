@@ -9,10 +9,9 @@
     <title>B-GAMMON AR | Pro</title>
     
     <script>
-      // Jules Audit: Prevención de errores de entorno
+      // Jules Audit: Silenciar ruidos de red y asegurar carga de scripts
       window.addEventListener('error', (e) => {
-        const msg = e.message || "";
-        if (typeof msg === 'string' && (msg.includes('WebSocket') || msg.includes('refresh.js'))) {
+        if (e.message && (e.message.includes('WebSocket') || e.message.includes('refresh.js'))) {
           e.stopImmediatePropagation();
         }
       }, true);
@@ -29,8 +28,9 @@
             overflow: hidden; touch-action: none;
         }
         .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
-        video { transform: scaleX(-1); object-fit: cover; }
-        canvas { touch-action: none; }
+        video { transform: scaleX(-1); object-fit: cover; width: 100%; height: 100%; position: absolute; }
+        canvas { touch-action: none; position: absolute; width: 100%; height: 100%; z-index: 10; }
+        .glass { background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); }
     </style>
 
     <script type="importmap">
@@ -47,7 +47,7 @@
 </head>
 <body>
     <div id="root"></div>
-    <!-- Usamos src directo para que el bundler del entorno lo resuelva correctamente -->
-    <script type="module" src="index.tsx"></script>
+    <!-- Usamos ruta absoluta /index.tsx para evitar el 404 al usar query params -->
+    <script type="module" src="/index.tsx"></script>
 </body>
 </html>
