@@ -2,13 +2,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
-// --- SILENCIADOR DE ERRORES (Gemi Julie Clean Logs) ---
+// --- SILENCIADOR DE ERRORES (Jules Auditor) ---
 window.addEventListener('error', (e) => {
-  const ignored = [
-    'WebSocket', 'message channel closed', 'favicon.ico', 
-    'refresh.js', 'NotReadableError', 'NotAllowedError', 
-    'AbortError', 'NS_ERROR_CORRUPTED_CONTENT', 'PeerJS', 'Could not start video source'
-  ];
+  const ignored = ['WebSocket', 'PeerJS', 'message channel', 'favicon', 'refresh.js'];
   if (ignored.some(msg => (e.message || '').includes(msg))) {
     e.stopImmediatePropagation();
     return false;
@@ -54,22 +50,25 @@ const playSound = (type: 'dice' | 'checker' | 'win') => {
   } catch(e) {}
 };
 
-// --- TYPES ---
-export type Player = 'white' | 'red';
-export type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING' | 'CONNECTING';
-export type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
-export type ConnectionStatus = 'IDLE' | 'CONNECTING' | 'PEER_FOUND' | 'SYNCING' | 'READY' | 'ERROR';
+// --- TYPES & CONSTANTS ---
+type Player = 'white' | 'red';
+type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING' | 'CONNECTING';
+type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
+type ConnectionStatus = 'IDLE' | 'CONNECTING' | 'WAITING_FOR_HOST' | 'SYNCING' | 'READY' | 'ERROR';
 
-export interface Point { checkers: Player[]; }
-export interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; offsetY: number; }
-export interface GameStateSnapshot {
-  points: Point[];
-  bar: { white: number, red: number };
-  off: { white: number, red: number };
-  movesLeft: number[];
-}
+const CANVAS_WIDTH = 1200;
+const CANVAS_HEIGHT = 700;
+const BOARD_PADDING = 40;
+const CENTER_BAR_WIDTH = 60;
+const CHECKER_RADIUS = 26;
+const AR_STABILIZATION_THRESHOLD = 5;
+const PINCH_THRESHOLD = 0.5;
+const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
-export interface GameState {
+interface Point { checkers: Player[]; }
+interface GrabbedInfo { player: Player; fromIndex: number; x: number; y: number; isMouse: boolean; offsetY: number; }
+
+interface GameState {
   points: Point[];
   bar: { white: number, red: number };
   off: { white: number, red: number };
@@ -88,16 +87,6 @@ export interface GameState {
   connStatus: ConnectionStatus;
 }
 
-// --- CONSTANTS ---
-const CANVAS_WIDTH = 1200;
-const CANVAS_HEIGHT = 700;
-const BOARD_PADDING = 40;
-const CENTER_BAR_WIDTH = 60;
-const CHECKER_RADIUS = 26;
-const RELATIVE_PINCH_THRESHOLD = 0.5; 
-const STABILIZATION_FRAMES = 5; // Más frames para estabilidad total
-const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
-
 const initialPoints = (): Point[] => {
   const p = Array(24).fill(null).map(() => ({ checkers: [] as Player[] }));
   const add = (idx: number, n: number, col: Player) => { for(let i=0; i<n; i++) p[idx].checkers.push(col); };
@@ -106,6 +95,7 @@ const initialPoints = (): Point[] => {
   return p;
 };
 
+// --- LOGIC HELPERS ---
 const getTargetPoint = (player: Player, from: number, die: number) => {
   if (from === -1) return player === 'red' ? die - 1 : 24 - die;
   return player === 'red' ? from + die : from - die;
@@ -149,544 +139,459 @@ const hasAnyLegalMove = (state: GameState): boolean => {
     if (state.points[i].checkers.includes(p)) {
       if (diceUniq.some(die => {
         const target = getTargetPoint(p, i, die);
-        if (target >= 0 && target <= 23) return isValidMove(state, p, i, target, die);
-        return isValidMove(state, p, i, 'off', die);
+        return (target >= 0 && target <= 23) ? isValidMove(state, p, i, target, die) : isValidMove(state, p, i, 'off', die);
       })) return true;
     }
   }
   return false;
 };
 
-const ConfettiRain: React.FC = () => {
-  return (
-    <div className="absolute inset-0 pointer-events-none overflow-hidden z-[140]">
-      {Array.from({ length: 60 }).map((_, i) => (
-        <div 
-          key={i} 
-          className="confetti" 
-          style={{ 
-            left: `${Math.random() * 100}%`, 
-            animationDelay: `${Math.random() * 5}s`,
-            animationDuration: `${3 + Math.random() * 2}s`,
-            backgroundColor: i % 3 === 0 ? '#fbbf24' : (i % 3 === 1 ? '#ffffff' : '#f59e0b'),
-            width: `${Math.random() * 12 + 6}px`,
-            height: `${Math.random() * 8 + 4}px`
-          }} 
-        />
-      ))}
-    </div>
-  );
-};
-
+// --- APP COMPONENT ---
 const App: React.FC = () => {
   const [view, setView] = useState<View>('HOME');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [history, setHistory] = useState<GameStateSnapshot[]>([]);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mousePos = useRef({ x: 0, y: 0 });
   const smoothHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
-  const pinchBuffer = useRef<boolean[]>([]);
+  const pinchBuffer = useRef<number>(0);
   const grabbedRef = useRef<GrabbedInfo | null>(null);
+  
   const peerRef = useRef<any>(null);
   const connRef = useRef<any>(null);
-  const handshakeInterval = useRef<any>(null);
+  const reconnectTimeout = useRef<any>(null);
 
   const [state, setState] = useState<GameState>({
     points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
-    turn: 'white', dice: [], movesLeft: [], winner: null, gameMode: 'LOCAL', 
-    userColor: 'white', roomID: '', isHost: true, boardOpacity: 0.9, 
+    turn: 'white', dice: [], movesLeft: [], winner: null, gameMode: 'LOCAL',
+    userColor: 'white', roomID: '', isHost: true, boardOpacity: 0.9,
     cameraOpacity: 0.35, isBlocked: false, isFlipped: false, connStatus: 'IDLE'
   });
 
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  const clearRoomURL = useCallback(() => {
-    const url = new URL(window.location.href);
-    if (url.searchParams.has('room')) {
-      url.searchParams.delete('room');
-      window.history.replaceState({}, document.title, url.pathname);
-    }
-  }, []);
-
   const broadcastState = useCallback((newState: Partial<GameState>) => {
-    if (connRef.current && stateRef.current.gameMode === 'ONLINE' && connRef.current.open) {
-        connRef.current.send({ type: 'STATE_SYNC', payload: newState });
+    if (connRef.current?.open && stateRef.current.gameMode === 'ONLINE') {
+      connRef.current.send({ type: 'STATE_UPDATE', payload: newState });
     }
   }, []);
 
-  // --- HANDSHAKE ROBUSTO ---
-  useEffect(() => {
-    if (state.roomID && state.gameMode === 'ONLINE') {
-        const idBase = `bgammon-${state.roomID}`;
-        const peerID = state.isHost ? `${idBase}-host` : `${idBase}-guest-${Math.random().toString(36).substring(2, 6)}`;
-        
-        if (peerRef.current) peerRef.current.destroy();
-        
-        const peer = new (window as any).Peer(peerID, { 
-            debug: 1, // Habilitar debug para ver errores de red
-            config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] } 
-        });
-        peerRef.current = peer;
+  // --- MULTIPLAYER CORE ---
+  const initPeer = useCallback((roomID: string, asHost: boolean) => {
+    if (peerRef.current) peerRef.current.destroy();
+    
+    const id = asHost ? `bgammon-${roomID}-host` : `bgammon-${roomID}-guest-${Math.random().toString(36).substring(7)}`;
+    const peer = new (window as any).Peer(id, { debug: 1 });
+    peerRef.current = peer;
 
-        peer.on('open', (id: string) => { 
-          console.log('Peer abierto con ID:', id);
-          if (!state.isHost) {
-            setState(s => ({...s, connStatus: 'CONNECTING'}));
-            attemptConnection(); 
-          } else {
-            setState(s => ({...s, connStatus: 'IDLE'})); // Host espera conexión
-          }
-        });
-
-        peer.on('error', (err: any) => {
-          console.error('Error de PeerJS:', err.type, err);
-          if (err.type === 'peer-unavailable' && !stateRef.current.isHost) {
-            // El host no está disponible, reintentar
-            setTimeout(attemptConnection, 3000);
-          } else if (err.type === 'id-taken' && stateRef.current.isHost) {
-            // ID de host ya tomado (quizás una sesión anterior sigue activa)
-            // No hacemos nada, esperamos que expire o usamos un ID con sufijo si fuera crítico
-          }
-          setState(s => ({...s, connStatus: 'ERROR'}));
-        });
-
-        const attemptConnection = () => {
-            if (!peer.open || stateRef.current.isHost) return;
-            console.log('Intentando conectar al host...');
-            const conn = peer.connect(`${idBase}-host`, { reliable: true });
-            setupConnection(conn);
-        };
-
-        peer.on('connection', (conn: any) => { 
-          if (stateRef.current.isHost) {
-            console.log('Recibida conexión de invitado');
-            setupConnection(conn); 
-          }
-        });
-
-        const setupConnection = (conn: any) => {
-            connRef.current = conn;
-            
-            conn.on('open', () => {
-                console.log('Canal de datos abierto');
-                setState(s => ({...s, connStatus: 'PEER_FOUND'}));
-                if (!stateRef.current.isHost) {
-                    // El invitado inicia el handshake enviando HELLO periódicamente hasta recibir ACK
-                    if (handshakeInterval.current) clearInterval(handshakeInterval.current);
-                    handshakeInterval.current = setInterval(() => {
-                        if (conn.open && stateRef.current.connStatus !== 'READY') {
-                          conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
-                        }
-                    }, 1000);
-                    conn.send({ type: 'GUEST_HELLO', payload: { timestamp: Date.now() } });
-                }
-            });
-
-            conn.on('data', (data: any) => {
-                const { type, payload } = data;
-                const currentS = stateRef.current;
-
-                if (type === 'GUEST_HELLO' && currentS.isHost) {
-                    console.log('Handshake: Recibido HELLO de invitado');
-                    setState(s => ({ ...s, connStatus: 'SYNCING' }));
-                    conn.send({ type: 'HANDSHAKE_ACK', payload: stateRef.current });
-                }
-                
-                if (type === 'HANDSHAKE_ACK' && !currentS.isHost) {
-                    console.log('Handshake: Recibido ACK de host');
-                    if (handshakeInterval.current) { clearInterval(handshakeInterval.current); handshakeInterval.current = null; }
-                    setState(s => ({ 
-                      ...payload, 
-                      connStatus: 'READY', 
-                      isHost: false, 
-                      userColor: 'red', 
-                      roomID: s.roomID
-                    }));
-                    setView('PLAYING');
-                }
-
-                if (type === 'STATE_SYNC') {
-                    setState(s => ({
-                      ...s, ...payload,
-                      userColor: s.userColor, isHost: s.isHost, roomID: s.roomID,
-                      boardOpacity: s.boardOpacity, cameraOpacity: s.cameraOpacity, connStatus: 'READY'
-                    }));
-                }
-
-                if (type === 'REQUEST_FULL_STATE' && currentS.isHost) {
-                  conn.send({ type: 'STATE_SYNC', payload: currentS });
-                }
-            });
-
-            conn.on('close', () => {
-              console.log('Conexión cerrada');
-              setState(s => ({ ...s, connStatus: 'CONNECTING' }));
-              if (!stateRef.current.isHost) setTimeout(attemptConnection, 3000);
-            });
-        };
-
-        return () => { if (handshakeInterval.current) clearInterval(handshakeInterval.current); };
-    }
-  }, [state.roomID, state.gameMode]);
-
-  useEffect(() => { 
-    if (state.isHost && state.connStatus === 'SYNCING' && (view === 'INVITE_SENT' || view === 'ONLINE_LOBBY')) {
-      setState(s => ({...s, connStatus: 'READY'}));
-      setView('PLAYING'); 
-    }
-  }, [state.connStatus, view, state.isHost]);
-
-  const [isARLoading, setIsARLoading] = useState(true);
-  const rawHand = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2, isPinching: false, isDetected: false });
-
-  const resetGame = useCallback((mode: GameMode = 'LOCAL') => {
-    setHistory([]); setIsAiProcessing(false); grabbedRef.current = null;
-    const newState: GameState = { 
-      ...stateRef.current, points: initialPoints(), bar: { white: 0, red: 0 }, 
-      off: { white: 0, red: 0 }, turn: 'white' as Player, dice: [], movesLeft: [], 
-      winner: null, gameMode: mode, isBlocked: false 
-    };
-    setState(newState); broadcastState(newState);
-  }, [broadcastState]);
-
-  // --- AR LOGIC ---
-  useEffect(() => {
-    if (view !== 'PLAYING') return;
-    let mounted = true; let cameraInstance: any = null;
-    const HandsClass = (window as any).Hands; const CameraClass = (window as any).Camera;
-    const initAR = async () => {
-      if (!HandsClass || !CameraClass || !videoRef.current) { if (mounted) setIsARLoading(false); return; }
-      const hands = new HandsClass({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-      hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
-      hands.onResults((results: any) => {
-        if (!mounted || !results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
-        const l = results.multiHandLandmarks[0];
-        const palmSize = Math.sqrt(Math.pow(l[0].x - l[9].x, 2) + Math.pow(l[0].y - l[9].y, 2));
-        const pinchDist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
-        rawHand.current = { 
-          x: (1 - l[8].x) * CANVAS_WIDTH, 
-          y: l[8].y * CANVAS_HEIGHT, 
-          isPinching: (pinchDist / palmSize) < RELATIVE_PINCH_THRESHOLD, 
-          isDetected: true 
-        };
-      });
-      try {
-        cameraInstance = new CameraClass(videoRef.current, { 
-          onFrame: async () => { if (mounted && videoRef.current) try { await hands.send({ image: videoRef.current }); } catch(e) {} }, 
-          width: 1280, height: 720 
-        });
-        await cameraInstance.start();
-      } catch (err: any) { setCameraError("Error al iniciar cámara."); if (mounted) setIsARLoading(false); } finally { if (mounted) setIsARLoading(false); }
-    };
-    initAR(); return () => { mounted = false; if (cameraInstance) try { cameraInstance.stop(); } catch(e) {} };
-  }, [view]);
-
-  const rollDice = useCallback((forced: boolean = false) => {
-    const s = stateRef.current; if (!(s.gameMode === 'LOCAL' || s.turn === s.userColor) && !forced) return;
-    playSound('dice'); setHistory([]);
-    setState(s => {
-      if (!forced && (s.movesLeft.length > 0 || s.winner)) return s;
-      const d1 = Math.floor(Math.random() * 6) + 1; const d2 = Math.floor(Math.random() * 6) + 1;
-      const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
-      const result = { ...s, dice: [d1, d2], movesLeft: moves, isBlocked: !hasAnyLegalMove({ ...s, dice: [d1, d2], movesLeft: moves } as any) && !s.winner };
-      broadcastState(result); return result;
+    peer.on('open', () => {
+      setState(s => ({ ...s, connStatus: asHost ? 'IDLE' : 'CONNECTING' }));
+      if (!asHost) connectToHost(roomID);
     });
-  }, [broadcastState]);
 
-  const passTurn = useCallback(() => {
-    setHistory([]); setIsAiProcessing(false);
-    setState(s => {
-      const result = { ...s, turn: (s.turn === 'white' ? 'red' : 'white') as Player, dice: [], movesLeft: [], isBlocked: false };
-      broadcastState(result); return result;
+    peer.on('connection', (conn: any) => {
+      if (asHost) {
+        connRef.current = conn;
+        setupConnection(conn);
+      }
     });
-  }, [broadcastState]);
 
-  const undoMove = () => {
-    if (history.length === 0) return;
-    const last = history[history.length - 1]; setHistory(h => h.slice(0, -1));
-    setState(s => { const result = { ...s, ...last, isBlocked: false }; broadcastState(result); return result; });
+    peer.on('error', (err: any) => {
+      console.warn('Peer error:', err.type);
+      if (err.type === 'peer-unavailable' && !asHost) {
+        reconnectTimeout.current = setTimeout(() => connectToHost(roomID), 3000);
+      }
+    });
+  }, []);
+
+  const connectToHost = (roomID: string) => {
+    const conn = peerRef.current.connect(`bgammon-${roomID}-host`, { reliable: true });
+    setupConnection(conn);
   };
 
+  const setupConnection = (conn: any) => {
+    connRef.current = conn;
+    conn.on('open', () => {
+      setState(s => ({ ...s, connStatus: 'SYNCING' }));
+      if (stateRef.current.isHost) {
+        conn.send({ type: 'INIT_SYNC', payload: stateRef.current });
+      }
+    });
+
+    conn.on('data', (data: any) => {
+      const { type, payload } = data;
+      if (type === 'INIT_SYNC' || type === 'STATE_UPDATE') {
+        setState(s => ({ ...s, ...payload, userColor: s.userColor, isHost: s.isHost, roomID: s.roomID, connStatus: 'READY' }));
+        if (view === 'CONNECTING' || view === 'INVITE_SENT') setView('PLAYING');
+      }
+    });
+
+    conn.on('close', () => {
+      setState(s => ({ ...s, connStatus: 'ERROR' }));
+      if (!stateRef.current.isHost) setTimeout(() => connectToHost(stateRef.current.roomID), 2000);
+    });
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const room = params.get('room');
+    if (room && view === 'HOME') {
+      const rid = room.toUpperCase();
+      setState(s => ({ ...s, roomID: rid, userColor: 'red', gameMode: 'ONLINE', isHost: false }));
+      initPeer(rid, false);
+      setView('CONNECTING');
+    }
+  }, [initPeer, view]);
+
+  // --- AR & RENDER ---
+  const [isARLoading, setIsARLoading] = useState(true);
+  const rawHand = useRef({ x: 0, y: 0, isPinching: false, isDetected: false });
+
+  useEffect(() => {
+    if (view !== 'PLAYING') return;
+    let camera: any = null;
+    const Hands = (window as any).Hands;
+    const Camera = (window as any).Camera;
+
+    if (!Hands || !Camera || !videoRef.current) { setIsARLoading(false); return; }
+
+    const hands = new Hands({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+
+    hands.onResults((results: any) => {
+      if (!results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
+      const l = results.multiHandLandmarks[0];
+      const palmSize = Math.sqrt(Math.pow(l[0].x - l[9].x, 2) + Math.pow(l[0].y - l[9].y, 2));
+      const pinchDist = Math.sqrt(Math.pow(l[8].x - l[4].x, 2) + Math.pow(l[8].y - l[4].y, 2));
+      rawHand.current = { 
+        x: (1 - l[8].x) * CANVAS_WIDTH, 
+        y: l[8].y * CANVAS_HEIGHT, 
+        isPinching: (pinchDist / palmSize) < PINCH_THRESHOLD,
+        isDetected: true 
+      };
+    });
+
+    camera = new Camera(videoRef.current, { 
+      onFrame: async () => { if (videoRef.current) await hands.send({ image: videoRef.current }); },
+      width: 1280, height: 720 
+    });
+    camera.start().then(() => setIsARLoading(false));
+
+    return () => { if (camera) camera.stop(); };
+  }, [view]);
+
+  // --- GAME ACTIONS ---
   const executeMove = (from: number, to: number | 'off', die: number) => {
-    const current = stateRef.current; if (!isValidMove(current, current.turn, from, to, die)) return;
+    const s = stateRef.current;
+    if (!isValidMove(s, s.turn, from, to, die)) return;
     playSound('checker');
-    setHistory(h => [...h, { points: JSON.parse(JSON.stringify(current.points)), bar: { ...current.bar }, off: { ...current.off }, movesLeft: [...current.movesLeft] }]);
+
     setState(curr => {
-      const ns = JSON.parse(JSON.stringify(curr)) as GameState; const p = ns.turn;
+      const ns = JSON.parse(JSON.stringify(curr)) as GameState;
+      const p = ns.turn;
       if (from === -1) ns.bar[p]--; else ns.points[from].checkers.pop();
+      
       if (to === 'off') ns.off[p]++;
       else {
         const target = ns.points[to as number];
-        if (target.checkers.length === 1 && target.checkers[0] !== p) { ns.bar[target.checkers[0]]++; target.checkers = [p]; }
-        else target.checkers.push(p);
+        if (target.checkers.length === 1 && target.checkers[0] !== p) {
+          ns.bar[target.checkers[0]]++; target.checkers = [p];
+        } else target.checkers.push(p);
       }
+
       ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
-      if (ns.off.white === 15) { ns.winner = 'white'; playSound('win'); } else if (ns.off.red === 15) { ns.winner = 'red'; playSound('win'); }
-      if (ns.winner) { ns.isBlocked = false; ns.movesLeft = []; }
-      else {
-        if (ns.movesLeft.length > 0 && !hasAnyLegalMove(ns)) ns.isBlocked = true;
-        else if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; ns.movesLeft = []; ns.isBlocked = false; setHistory([]); }
+      if (ns.off.white === 15) ns.winner = 'white';
+      else if (ns.off.red === 15) ns.winner = 'red';
+
+      if (ns.winner) { playSound('win'); ns.movesLeft = []; }
+      else if (ns.movesLeft.length === 0 || !hasAnyLegalMove(ns)) {
+        ns.turn = ns.turn === 'white' ? 'red' : 'white';
+        ns.dice = []; ns.movesLeft = [];
       }
-      broadcastState(ns); return ns;
+      
+      broadcastState(ns);
+      return ns;
     });
   };
 
-  const getPos = useCallback((idx: number, isUserRed: boolean, isFlipped: boolean) => {
-    let effectiveIdx = isUserRed ? 23 - idx : idx;
-    if (isFlipped) effectiveIdx = 23 - effectiveIdx; 
-    const isTop = effectiveIdx >= 12;
-    const relIdx = isTop ? 23 - effectiveIdx : effectiveIdx;
-    const xBase = (CANVAS_WIDTH - 900) / 2 + 50; 
+  const getPos = useCallback((idx: number, isRed: boolean, isFlipped: boolean) => {
+    let effective = isRed ? 23 - idx : idx;
+    if (isFlipped) effective = 23 - effective;
+    const isTop = effective >= 12;
+    const relIdx = isTop ? 23 - effective : effective;
+    const xBase = (CANVAS_WIDTH - 900) / 2 + 50;
     const x = xBase + (relIdx * 70) + (relIdx >= 6 ? CENTER_BAR_WIDTH : 0);
     return { x: x + 35, y: isTop ? BOARD_PADDING : CANVAS_HEIGHT - BOARD_PADDING, isTop };
   }, []);
 
-  const getZone = useCallback((x: number, y: number, isUserRed: boolean, isFlipped: boolean) => {
+  const getZone = useCallback((x: number, y: number, isRed: boolean, isFlipped: boolean) => {
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50;
+    // Zona de salida SIEMPRE a la izquierda (x < xBase)
+    if (x < xBase - 10) return { type: 'off' };
+    
     for (let i = 0; i < 24; i++) {
-      const pos = getPos(i, isUserRed, isFlipped);
-      if (Math.abs(x - pos.x) < 40) {
-        if (pos.isTop && y < CANVAS_HEIGHT/2 + 80) return { type: 'point', index: i };
-        if (!pos.isTop && y > CANVAS_HEIGHT/2 - 80) return { type: 'point', index: i };
+      const pos = getPos(i, isRed, isFlipped);
+      if (Math.abs(x - pos.x) < 35) {
+        if (pos.isTop && y < CANVAS_HEIGHT / 2) return { type: 'point', index: i };
+        if (!pos.isTop && y > CANVAS_HEIGHT / 2) return { type: 'point', index: i };
       }
     }
-    if (Math.abs(x - (xBase + 450)) < 40) return { type: 'bar' };
-    // Bear-off logic: Siempre a la izquierda
-    if (x < xBase - 10 || x > xBase + 910) return { type: 'off' };
+    if (Math.abs(x - (xBase + 450)) < 30) return { type: 'bar' };
     return null;
   }, [getPos]);
 
-  const getClampedCoords = (clientX: number, clientY: number) => {
-    const rect = canvasRef.current?.getBoundingClientRect(); if (!rect) return { x: 0, y: 0 };
-    const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT; const rectAspect = rect.width / rect.height;
-    let scale, ox, oy;
-    if (rectAspect > canvasAspect) { scale = rect.height / CANVAS_HEIGHT; ox = (rect.width - CANVAS_WIDTH * scale) / 2; oy = 0; }
-    else { scale = rect.width / CANVAS_WIDTH; ox = 0; oy = (rect.height - CANVAS_HEIGHT * scale) / 2; }
-    return { x: (clientX - rect.left - ox) / scale, y: (clientY - rect.top - oy) / scale };
-  };
-
-  const handlePointerDown = (clientX: number, clientY: number) => {
-    if (isMenuOpen || stateRef.current.winner) return;
-    const s = stateRef.current; if (!(s.gameMode === 'LOCAL' || s.turn === s.userColor)) return;
-    const { x, y } = getClampedCoords(clientX, clientY);
-    const zone = getZone(x, y, s.userColor === 'red', s.isFlipped);
-    
-    if (zone?.type === 'bar' && s.bar[s.turn] > 0) {
-      grabbedRef.current = { player: s.turn, fromIndex: -1, x, y, isMouse: true, offsetY: 0 };
-      setState(p => ({ ...p, grabbed: grabbedRef.current }));
-    } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) {
-      grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x, y, isMouse: true, offsetY: -40 };
-      setState(p => ({ ...p, grabbed: grabbedRef.current }));
-    }
-  };
-
-  const handlePointerUp = (clientX: number, clientY: number) => {
-    if (!grabbedRef.current || !grabbedRef.current.isMouse) return;
-    const s = stateRef.current; const { x, y } = getClampedCoords(clientX, clientY);
-    const tz = getZone(x, y, s.userColor === 'red', s.isFlipped);
-    if (tz) {
-      const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null);
-      if (to !== null) {
-        const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d));
-        if (possibleDice.length > 0) executeMove(grabbedRef.current!.fromIndex, to as any, possibleDice[0]);
-      }
-    }
-    grabbedRef.current = null; setState(p => ({ ...p, grabbed: null }));
-  };
-
   useEffect(() => {
     if (view !== 'PLAYING') return;
+    const ctx = canvasRef.current?.getContext('2d');
     let anim: number;
-    const draw = () => {
-      const ctx = canvasRef.current?.getContext('2d'); if (!ctx) return;
-      const s = stateRef.current; const isRed = s.userColor === 'red';
-      
+
+    const render = () => {
+      if (!ctx) return;
+      const s = stateRef.current;
+      const isRed = s.userColor === 'red';
+
+      // Estabilización AR
       if (rawHand.current.isDetected) {
         smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.4;
         smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.4;
-        pinchBuffer.current.push(rawHand.current.isPinching); 
-        if (pinchBuffer.current.length > STABILIZATION_FRAMES * 2) pinchBuffer.current.shift();
-        
-        const isPinchS = pinchBuffer.current.filter(b => b).length >= STABILIZATION_FRAMES;
-        const isRelS = pinchBuffer.current.filter(b => !b).length >= STABILIZATION_FRAMES;
+        if (rawHand.current.isPinching) pinchBuffer.current++; else pinchBuffer.current = 0;
 
-        if (isPinchS && !grabbedRef.current && (s.gameMode === 'LOCAL' || s.turn === s.userColor) && !s.winner && !s.isBlocked && !isMenuOpen) {
+        const stabilizedPinch = pinchBuffer.current >= AR_STABILIZATION_THRESHOLD;
+        if (stabilizedPinch && !grabbedRef.current && (s.gameMode === 'LOCAL' || s.turn === s.userColor)) {
           const zone = getZone(smoothHand.current.x, smoothHand.current.y, isRed, s.isFlipped);
-          if (zone?.type === 'bar' && s.bar[s.turn] > 0) { 
-            grabbedRef.current = { player: s.turn, fromIndex: -1, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 }; 
-            setState(p => ({ ...p, grabbed: grabbedRef.current })); 
-          } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) { 
-            grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 }; 
-            setState(p => ({ ...p, grabbed: grabbedRef.current })); 
+          if (zone?.type === 'bar' && s.bar[s.turn] > 0) {
+            grabbedRef.current = { player: s.turn, fromIndex: -1, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 };
+          } else if (zone?.type === 'point' && s.points[zone.index!].checkers.includes(s.turn)) {
+            grabbedRef.current = { player: s.turn, fromIndex: zone.index!, x: smoothHand.current.x, y: smoothHand.current.y, isMouse: false, offsetY: 0 };
           }
-        } else if (isRelS && grabbedRef.current && !grabbedRef.current.isMouse) {
-          const tz = getZone(smoothHand.current.x, smoothHand.current.y, isRed, s.isFlipped);
-          if (tz) { 
-            const to = tz.type === 'off' ? 'off' : (tz.type === 'point' ? tz.index! : null); 
-            if (to !== null) { 
-              const possibleDice = s.movesLeft.filter(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d)); 
-              if (possibleDice.length > 0) executeMove(grabbedRef.current!.fromIndex, to as any, possibleDice[0]); 
-            } 
+        } else if (!rawHand.current.isPinching && grabbedRef.current && !grabbedRef.current.isMouse) {
+          const zone = getZone(smoothHand.current.x, smoothHand.current.y, isRed, s.isFlipped);
+          if (zone) {
+            const to = zone.type === 'off' ? 'off' : (zone.type === 'point' ? zone.index! : null);
+            if (to !== null) {
+              const die = s.movesLeft.find(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, to as any, d));
+              if (die) executeMove(grabbedRef.current!.fromIndex, to as any, die);
+            }
           }
-          grabbedRef.current = null; setState(p => ({ ...p, grabbed: null }));
+          grabbedRef.current = null;
         }
       }
 
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
       const xB = (CANVAS_WIDTH - 900) / 2 + 50;
+
+      // Tablero
       ctx.save(); ctx.globalAlpha = s.boardOpacity; ctx.fillStyle = '#1c1917'; ctx.fillRect(xB, BOARD_PADDING, 900, CANVAS_HEIGHT - BOARD_PADDING * 2); ctx.restore();
 
+      // Puntos y Fichas
       for (let i = 0; i < 24; i++) {
         const pos = getPos(i, isRed, s.isFlipped);
-        const canM = (s.gameMode === 'LOCAL' || s.turn === s.userColor) && s.movesLeft.length > 0 && s.points[i].checkers.includes(s.turn);
-        const isT = grabbedRef.current && s.movesLeft.some(d => isValidMove(s, s.turn, grabbedRef.current!.fromIndex, i, d));
-        ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.95)' : 'rgba(190, 160, 110, 0.8)';
-        if (isT) ctx.fillStyle = 'rgba(251, 191, 36, 0.5)';
-        ctx.beginPath(); ctx.moveTo(pos.x - 35, pos.y); ctx.lineTo(pos.x + 35, pos.y); ctx.lineTo(pos.x, pos.isTop ? pos.y + 280 : pos.y - 280); ctx.fill();
-        s.points[i].checkers.forEach((p, idx) => { 
-          if (grabbedRef.current?.fromIndex === i && idx === s.points[i].checkers.length - 1) return; 
-          drawCh(ctx, pos.x, pos.isTop ? pos.y + 42 + idx * 42 : pos.y - 42 - idx * 42, p, false, canM && idx === s.points[i].checkers.length - 1); 
+        ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.9)' : 'rgba(190, 160, 110, 0.7)';
+        ctx.beginPath(); ctx.moveTo(pos.x - 35, pos.y); ctx.lineTo(pos.x + 35, pos.y); ctx.lineTo(pos.x, pos.isTop ? pos.y + 260 : pos.y - 260); ctx.fill();
+        s.points[i].checkers.forEach((p, idx) => {
+          if (grabbedRef.current?.fromIndex === i && idx === s.points[i].checkers.length - 1) return;
+          drawChecker(ctx, pos.x, pos.isTop ? pos.y + 40 + idx * 42 : pos.y - 40 - idx * 42, p);
         });
       }
 
-      ctx.fillStyle = '#0a0a0a'; ctx.fillRect(xB + 450 - 32, BOARD_PADDING, 64, CANVAS_HEIGHT - BOARD_PADDING * 2);
+      // Barra Central
+      ctx.fillStyle = '#0a0a0a'; ctx.fillRect(xB + 450 - 30, BOARD_PADDING, 60, CANVAS_HEIGHT - BOARD_PADDING * 2);
       ['white', 'red'].forEach(p => {
-        const c = s.bar[p as Player];
-        const vY = (p === 'white' ? (!isRed ? CANVAS_HEIGHT - 120 : 120) : (!isRed ? 120 : CANVAS_HEIGHT - 120));
-        const canMB = (s.gameMode === 'LOCAL' || s.turn === s.userColor) && s.movesLeft.length > 0 && p === s.turn;
-        for(let i=0; i<c; i++) { 
-          if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === c - 1) continue; 
-          drawCh(ctx, xB + 450, vY + (p === (isRed ? 'red' : 'white') ? -i*42 : i*42), p as Player, false, canMB && i === c - 1); 
+        const count = s.bar[p as Player];
+        const baseV = p === 'white' ? CANVAS_HEIGHT - 120 : 120;
+        for (let i = 0; i < count; i++) {
+          if (grabbedRef.current?.fromIndex === -1 && grabbedRef.current?.player === p && i === count - 1) continue;
+          drawChecker(ctx, xB + 450, baseV + (p === 'white' ? -i * 42 : i * 42), p as Player);
         }
       });
 
-      // Bear-off visualization (Always left)
-      const OFF_X = 80;
-      for(let i=0; i<s.off.white; i++) {
-        const isBottom = !isRed; 
-        drawCh(ctx, OFF_X, isBottom ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'white');
+      // ZONA SALIDA (Bear-off) -> Siempre a la izquierda
+      const OFF_X = 60;
+      for(let i=0; i<s.off.white; i++) drawChecker(ctx, OFF_X, CANVAS_HEIGHT - 80 - i*15, 'white', true);
+      for(let i=0; i<s.off.red; i++) drawChecker(ctx, OFF_X, 80 + i*15, 'red', true);
+
+      // Dados
+      if (s.dice.length) s.dice.forEach((d, i) => drawDie(ctx, xB + 450 + (i === 0 ? -180 : 180), CANVAS_HEIGHT/2, d, s.turn));
+
+      // Ficha arrastrada
+      if (grabbedRef.current) {
+        const dx = grabbedRef.current.isMouse ? mousePos.current.x : smoothHand.current.x;
+        const dy = grabbedRef.current.isMouse ? mousePos.current.y : smoothHand.current.y;
+        drawChecker(ctx, dx, dy + grabbedRef.current.offsetY, grabbedRef.current.player, false, true);
       }
-      for(let i=0; i<s.off.red; i++) {
-        const isBottom = isRed; 
-        drawCh(ctx, OFF_X, isBottom ? CANVAS_HEIGHT - BOARD_PADDING - 40 - i*15 : BOARD_PADDING + 40 + i*15, 'red');
+
+      // Cursor AR
+      if (rawHand.current.isDetected) {
+        ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 10 : 20, 0, Math.PI * 2);
+        ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : '#fff'; ctx.lineWidth = 3; ctx.stroke();
       }
-      
-      if (s.dice.length > 0) s.dice.forEach((d, i) => drawD(ctx, xB + 450 + (i === 0 ? -180 : 180), CANVAS_HEIGHT/2, d, s.turn));
-      const dX = (grabbedRef.current?.isMouse ? mousePos.current.x : smoothHand.current.x);
-      const dY = (grabbedRef.current?.isMouse ? mousePos.current.y : smoothHand.current.y) + (grabbedRef.current?.offsetY || 0);
-      if (grabbedRef.current) drawCh(ctx, dX, dY, grabbedRef.current.player, true);
-      if (rawHand.current.isDetected) { 
-        ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 12 : 24, 0, Math.PI * 2); 
-        ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : 'white'; ctx.lineWidth = 4; ctx.stroke(); 
-      }
-      anim = requestAnimationFrame(draw);
+
+      anim = requestAnimationFrame(render);
     };
-    anim = requestAnimationFrame(draw); return () => cancelAnimationFrame(anim);
-  }, [view, getPos, getZone, isMenuOpen]);
+    render(); return () => cancelAnimationFrame(anim);
+  }, [view, getPos, getZone]);
 
-  const drawCh = (ctx: CanvasRenderingContext2D, x: number, y: number, p: Player, g = false, pulse = false) => {
-    ctx.save(); 
-    if (g) { ctx.shadowBlur = 40; ctx.shadowColor = COLORS.gold; } 
-    else if (pulse) { ctx.shadowBlur = Math.max(0, 15 + Math.sin(Date.now() / 200) * 10); ctx.shadowColor = COLORS.gold; }
-    const gr = ctx.createRadialGradient(x - 8, y - 8, 2, x, y, CHECKER_RADIUS); 
-    if (p === 'white') { gr.addColorStop(0, '#fff'); gr.addColorStop(1, '#ccc'); } 
-    else { gr.addColorStop(0, '#f55'); gr.addColorStop(1, '#a00'); }
-    ctx.beginPath(); ctx.arc(x, y, CHECKER_RADIUS, 0, Math.PI * 2); ctx.fillStyle = gr; ctx.fill(); ctx.restore();
+  const drawChecker = (ctx: CanvasRenderingContext2D, x: number, y: number, p: Player, flat = false, glow = false) => {
+    ctx.save();
+    if (glow) { ctx.shadowBlur = 30; ctx.shadowColor = COLORS.gold; }
+    const gr = ctx.createRadialGradient(x - 5, y - 5, 2, x, y, CHECKER_RADIUS);
+    gr.addColorStop(0, p === 'white' ? '#fff' : '#f55');
+    gr.addColorStop(1, p === 'white' ? '#aaa' : '#900');
+    ctx.beginPath(); ctx.arc(x, y, flat ? CHECKER_RADIUS / 1.5 : CHECKER_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = gr; ctx.fill(); ctx.restore();
   };
 
-  const drawD = (ctx: CanvasRenderingContext2D, x: number, y: number, v: number, p: Player) => {
-    ctx.save(); ctx.fillStyle = p === 'white' ? '#fff' : '#f44'; ctx.beginPath(); 
-    if (typeof (ctx as any).roundRect === 'function') (ctx as any).roundRect(x - 40, y - 40, 80, 80, 15); 
-    else ctx.rect(x - 40, y - 40, 80, 80); 
-    ctx.fill();
-    ctx.fillStyle = p === 'white' ? '#000' : '#fff'; 
-    const ds: Record<number, number[][]> = { 1: [[0,0]], 2: [[-22,-22], [22,22]], 3: [[-22,-22], [0,0], [22,22]], 4: [[-22,-22], [22,-22], [-22,22], [22,22]], 5: [[-22,-22], [22,-22], [0,0], [-22,22], [22,22]], 6: [[-22,-22], [22,-22], [-22,0], [22,0], [-22,22], [22,22]] };
-    (ds[v] || []).forEach((pt: number[]) => { ctx.beginPath(); ctx.arc(x + pt[0], y + pt[1], 7, 0, Math.PI * 2); ctx.fill(); }); 
-    ctx.restore();
+  const drawDie = (ctx: CanvasRenderingContext2D, x: number, y: number, v: number, p: Player) => {
+    ctx.fillStyle = p === 'white' ? '#fff' : '#f44';
+    ctx.beginPath(); (ctx as any).roundRect?.(x - 35, y - 35, 70, 70, 12); ctx.fill();
+    ctx.fillStyle = p === 'white' ? '#000' : '#fff';
+    const dots: Record<number, number[][]> = { 1:[[0,0]], 2:[[-18,-18],[18,18]], 3:[[-18,-18],[0,0],[18,18]], 4:[[-18,-18],[18,-18],[-18,18],[18,18]], 5:[[-18,-18],[18,-18],[0,0],[-18,18],[18,18]], 6:[[-18,-18],[18,-18],[-18,0],[18,0],[-18,18],[18,18]] };
+    dots[v]?.forEach(d => { ctx.beginPath(); ctx.arc(x+d[0], y+d[1], 6, 0, Math.PI*2); ctx.fill(); });
   };
 
-  // IA Logic
-  useEffect(() => {
-    if (state.gameMode === 'AI' && state.turn !== state.userColor && !state.winner && view === 'PLAYING' && !isAiProcessing) {
-      setIsAiProcessing(true);
-      const runAILogic = async () => {
-        await new Promise<void>(resolve => setTimeout(resolve, 1500));
-        let current = stateRef.current; if (current.dice.length === 0) { rollDice(true); setIsAiProcessing(false); return; }
-        const p = current.turn; const dU = Array.from(new Set<number>(current.movesLeft)).sort((a,b)=>b-a); let mF = false;
-        for (const d of dU) {
-          if (current.bar[p] > 0) { const target = getTargetPoint(p, -1, d); if (isValidMove(current, p, -1, target, d)) { executeMove(-1, target, d); mF = true; break; } }
-          else {
-            const ord = p === 'red' ? Array.from({length:24},(_,i)=>i) : Array.from({length:24},(_,i)=>23-i);
-            for (let idx of ord) { if (current.points[idx].checkers.includes(p)) { const target = getTargetPoint(p, idx, d); if (target < 0 || target > 23) { if (isValidMove(current, p, idx, 'off', d)) { executeMove(idx, 'off', d); mF = true; break; } } else if (isValidMove(current, p, idx, target, d)) { executeMove(idx, target, d); mF = true; break; } } }
-          }
-          if (mF) break;
-        }
-        if (!mF) { if (current.movesLeft.length > 0) setState(prev => ({ ...prev, movesLeft: prev.movesLeft.slice(1) })); else passTurn(); }
-        setIsAiProcessing(false);
-      };
-      runAILogic();
-    }
-  }, [state.turn, state.dice.length, state.movesLeft.length, isAiProcessing, view, state.gameMode, rollDice, passTurn]);
-
-  const generateRoom = () => { const id = Math.random().toString(36).substring(2, 8).toUpperCase(); setState(s => ({ ...s, roomID: id, userColor: 'white', gameMode: 'ONLINE', isHost: true, connStatus: 'IDLE' })); setView('INVITE_SENT'); };
-  const copyInviteLink = () => navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`).then(() => { setCopyFeedback(true); setTimeout(() => setCopyFeedback(false), 2000); });
-  
-  const exitGame = () => { 
-    if (handshakeInterval.current) clearInterval(handshakeInterval.current); 
-    if (connRef.current) try { connRef.current.close(); } catch(e) {} 
-    if (peerRef.current) try { peerRef.current.destroy(); } catch(e) {} 
-    clearRoomURL(); setHistory([]); setIsAiProcessing(false); setIsMenuOpen(false); grabbedRef.current = null; 
-    setState({ 
-      points: initialPoints(), bar: { white: 0, red: 0 }, off: { white: 0, red: 0 }, 
-      turn: 'white' as Player, dice: [], movesLeft: [], winner: null, gameMode: 'LOCAL' as GameMode, 
-      userColor: 'white' as Player, roomID: '', isHost: true, boardOpacity: 0.9, 
-      cameraOpacity: 0.35, isBlocked: false, isFlipped: false, connStatus: 'IDLE' as ConnectionStatus 
-    }); 
-    setView('HOME'); 
-  };
+  const rollDice = useCallback(() => {
+    const s = stateRef.current;
+    if (s.movesLeft.length > 0 || s.winner || (s.gameMode !== 'LOCAL' && s.turn !== s.userColor)) return;
+    playSound('dice');
+    const d1 = Math.floor(Math.random() * 6) + 1;
+    const d2 = Math.floor(Math.random() * 6) + 1;
+    const moves = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+    const ns = { ...s, dice: [d1, d2], movesLeft: moves, isBlocked: !hasAnyLegalMove({ ...s, movesLeft: moves } as any) };
+    setState(ns); broadcastState(ns);
+  }, [broadcastState]);
 
   return (
-    <div className="w-full h-full bg-black relative flex flex-col overflow-hidden" 
-         onPointerDown={(e) => handlePointerDown(e.clientX, e.clientY)}
-         onPointerUp={(e) => handlePointerUp(e.clientX, e.clientY)}
-         onPointerMove={(e) => { mousePos.current = getClampedCoords(e.clientX, e.clientY); }}>
-      
-      {cameraError && <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[1000] w-full max-w-sm px-4"><div className="bg-stone-900/90 border border-yellow-600/50 p-4 rounded-2xl text-center shadow-4xl backdrop-blur-md animate-in slide-in-from-top duration-300"><p className="text-white text-[10px] font-black uppercase tracking-widest">{cameraError}</p><button onClick={() => setCameraError(null)} className="mt-2 text-yellow-600 text-[9px] font-black underline uppercase">Entendido</button></div></div>}
+    <div className="w-full h-full bg-black relative flex flex-col overflow-hidden"
+      onPointerDown={(e) => {
+        if (view !== 'PLAYING' || isMenuOpen) return;
+        const { x, y } = { x: (e.clientX / window.innerWidth) * CANVAS_WIDTH, y: (e.clientY / window.innerHeight) * CANVAS_HEIGHT };
+        const zone = getZone(x, y, stateRef.current.userColor === 'red', stateRef.current.isFlipped);
+        if (zone?.type === 'bar' && stateRef.current.bar[stateRef.current.turn] > 0) {
+          grabbedRef.current = { player: stateRef.current.turn, fromIndex: -1, x, y, isMouse: true, offsetY: -40 };
+        } else if (zone?.type === 'point' && stateRef.current.points[zone.index!].checkers.includes(stateRef.current.turn)) {
+          grabbedRef.current = { player: stateRef.current.turn, fromIndex: zone.index!, x, y, isMouse: true, offsetY: -40 };
+        }
+      }}
+      onPointerUp={(e) => {
+        if (!grabbedRef.current?.isMouse) return;
+        const { x, y } = { x: (e.clientX / window.innerWidth) * CANVAS_WIDTH, y: (e.clientY / window.innerHeight) * CANVAS_HEIGHT };
+        const zone = getZone(x, y, stateRef.current.userColor === 'red', stateRef.current.isFlipped);
+        if (zone) {
+          const to = zone.type === 'off' ? 'off' : (zone.type === 'point' ? zone.index! : null);
+          if (to !== null) {
+            const die = stateRef.current.movesLeft.find(d => isValidMove(stateRef.current, stateRef.current.turn, grabbedRef.current!.fromIndex, to as any, d));
+            if (die) executeMove(grabbedRef.current!.fromIndex, to as any, die);
+          }
+        }
+        grabbedRef.current = null;
+      }}
+      onPointerMove={(e) => {
+        mousePos.current = { x: (e.clientX / window.innerWidth) * CANVAS_WIDTH, y: (e.clientY / window.innerHeight) * CANVAS_HEIGHT };
+      }}
+    >
+      {view === 'HOME' && (
+        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8">
+          <h1 className="text-8xl font-black italic text-white mb-16 tracking-tighter shadow-glow">B-GAMMON</h1>
+          <div className="flex flex-col gap-4 w-72">
+            <button onClick={() => { setState(s => ({ ...s, gameMode: 'AI' })); setView('PLAYING'); }} className="bg-white text-black font-black py-5 rounded-2xl hover:bg-yellow-600 hover:text-white transition-all uppercase">Vs Máquina</button>
+            <button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-5 rounded-2xl hover:bg-stone-700 transition-all uppercase">Multijugador</button>
+            <button onClick={() => { setState(s => ({ ...s, gameMode: 'LOCAL' })); setView('PLAYING'); }} className="bg-stone-900 text-white/50 font-black py-5 rounded-2xl text-[10px] uppercase">Local (2 Jugadores)</button>
+          </div>
+        </div>
+      )}
 
-      {state.isBlocked && !state.winner && <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[900] w-full max-w-lg px-4 pointer-events-none"><div className="bg-stone-900/80 border border-yellow-600/50 p-6 rounded-3xl text-center shadow-4xl backdrop-blur-md animate-in slide-in-from-top duration-500 pointer-events-auto flex items-center justify-between"><div className="text-left"><h3 className="text-yellow-600 font-black text-xl uppercase italic leading-none">SIN SALIDA</h3><p className="text-white/60 text-[9px] font-bold uppercase mt-1">No hay movimientos legales posibles.</p></div><button onClick={(e) => { e.stopPropagation(); passTurn(); }} className="bg-yellow-600 text-black font-black py-3 px-8 rounded-xl text-xs uppercase shadow-xl hover:scale-105 active:scale-95 transition-all">Siguiente Turno</button></div></div>}
+      {view === 'ONLINE_LOBBY' && (
+        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8">
+          <h2 className="text-5xl font-black text-white mb-12 italic uppercase">Sala Online</h2>
+          <div className="bg-stone-900 p-10 rounded-[3rem] w-full max-w-md border border-white/5 space-y-6">
+            <button onClick={() => { 
+              const rid = Math.random().toString(36).substring(7).toUpperCase();
+              setState(s => ({ ...s, roomID: rid, userColor: 'white', isHost: true, gameMode: 'ONLINE' }));
+              initPeer(rid, true);
+              setView('INVITE_SENT');
+            }} className="w-full bg-yellow-600 text-black font-black py-6 rounded-2xl uppercase shadow-xl">Crear Nueva Sala</button>
+          </div>
+          <button onClick={() => setView('HOME')} className="mt-8 text-white/30 uppercase font-black text-xs hover:text-white">Atrás</button>
+        </div>
+      )}
 
-      {view === 'HOME' && <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center"><h1 className="text-9xl font-black italic text-white mb-10 tracking-tighter drop-shadow-2xl">B-GAMMON</h1><div className="flex flex-col gap-4 w-64"><button onClick={() => { resetGame('AI'); setView('PLAYING'); }} className="bg-white text-black font-black py-4 rounded-xl hover:bg-yellow-600 hover:text-white transition-all shadow-xl uppercase tracking-widest">Vs Máquina</button><button onClick={() => setView('ONLINE_LOBBY')} className="bg-stone-800 text-white font-black py-4 rounded-xl hover:bg-stone-700 transition-all shadow-xl uppercase tracking-widest">Multijugador</button><button onClick={() => { resetGame('LOCAL'); setView('PLAYING'); }} className="bg-stone-900 text-white/50 font-black py-4 rounded-xl hover:text-white transition-all uppercase text-[10px]">Local (2 Players)</button></div></div>}
+      {view === 'INVITE_SENT' && (
+        <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8">
+          <div className="bg-stone-900 p-12 rounded-[4rem] w-full max-w-lg border border-white/5 text-center space-y-8">
+            <h3 className="text-3xl font-black text-white italic">¡SALA CREADA!</h3>
+            <div className="bg-black/50 p-6 rounded-2xl font-mono text-yellow-600 break-all select-all">
+              {`${window.location.origin}${window.location.pathname}?room=${state.roomID}`}
+            </div>
+            <button onClick={() => { 
+              navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`);
+              setCopyFeedback(true); setTimeout(() => setCopyFeedback(false), 2000);
+            }} className={`w-full py-5 rounded-2xl font-black uppercase transition-all ${copyFeedback ? 'bg-green-600' : 'bg-white text-black'}`}>
+              {copyFeedback ? '¡COPIADO!' : 'COPIAR LINK'}
+            </button>
+            <div className="flex items-center justify-center gap-3 text-white/20 animate-pulse">
+              <div className="w-2 h-2 bg-yellow-600 rounded-full"></div>
+              <span className="text-[10px] font-black uppercase tracking-widest">Esperando rival... ({state.connStatus})</span>
+            </div>
+          </div>
+          <button onClick={() => setView('HOME')} className="mt-8 text-white/30 uppercase text-xs">Cancelar</button>
+        </div>
+      )}
 
-      {view === 'ONLINE_LOBBY' && <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8"><h2 className="text-5xl font-black text-white mb-12 italic uppercase">Sala Online</h2><div className="bg-stone-900 p-10 rounded-[3rem] w-full max-w-md border border-white/10 shadow-2xl space-y-8">{!state.isHost && state.roomID ? <div className="text-center space-y-6"><p className="text-white/60 uppercase font-black text-xs tracking-widest">Has sido invitado a la sala</p><div className="text-5xl font-black text-yellow-600 bg-black/40 py-6 rounded-2xl border border-white/5">{state.roomID}</div><button onClick={() => setView('CONNECTING')} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all pulse-gold">Aceptar Reto</button></div> : <div className="flex flex-col gap-3"><button onClick={generateRoom} className="w-full bg-yellow-600 text-black font-black py-5 rounded-2xl uppercase shadow-xl hover:scale-105 transition-all">Crear Nueva Sala</button><div className="relative"><div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div><div className="relative flex justify-center text-[10px]"><span className="bg-stone-900 px-4 text-white/20 font-black uppercase tracking-widest">o usa un código</span></div></div><input id="room-code-input" type="text" placeholder="Código de sala..." className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-white text-center font-bold outline-none focus:border-yellow-600 transition-all uppercase" /><button onClick={() => { const val = (document.getElementById('room-code-input') as HTMLInputElement)?.value; if(val) setState(s => ({ ...s, roomID: val.toUpperCase(), userColor: 'red', gameMode: 'ONLINE', isHost: false })); }} className="w-full bg-white/5 text-white/40 font-black py-4 rounded-2xl uppercase hover:bg-white/10 transition-all">Unirse por Código</button></div>}</div><button onClick={exitGame} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Volver</button></div>}
-
-      {view === 'CONNECTING' && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center p-8"><div className="w-16 h-16 border-4 border-yellow-600 border-t-transparent rounded-full animate-spin mb-8"></div><p className="text-white font-black uppercase tracking-widest text-sm animate-pulse">Estableciendo conexión segura...</p><div className="text-white/20 text-[10px] uppercase font-black tracking-widest mt-2">{state.connStatus === 'ERROR' ? 'Intentando reconectar...' : state.connStatus}</div><button onClick={exitGame} className="mt-12 text-white/30 text-[10px] uppercase underline">Cancelar</button></div>}
-
-      {view === 'INVITE_SENT' && <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8"><div className="bg-stone-900 p-12 rounded-[4rem] w-full max-w-lg border border-white/10 shadow-4xl text-center space-y-10"><div className="w-24 h-24 bg-yellow-600/10 rounded-full flex items-center justify-center mx-auto animate-bounce"><span className="text-4xl">🔗</span></div><div><h3 className="text-3xl font-black text-white italic uppercase mb-2">¡SALA CREADA!</h3><p className="text-white/40 text-xs font-black uppercase tracking-widest px-8 leading-relaxed">Envía el link a tu oponente.</p></div><div className="space-y-4"><div className="bg-black/40 p-4 rounded-2xl border border-white/5 text-yellow-600 font-mono font-bold text-xl break-all">{`${window.location.origin}${window.location.pathname}?room=${state.roomID}`}</div><button onClick={copyInviteLink} className={`w-full py-5 rounded-2xl font-black uppercase transition-all shadow-xl ${copyFeedback ? 'bg-green-600 text-white' : 'bg-white text-black hover:bg-yellow-600 hover:text-white'}`}>{copyFeedback ? '¡LINK COPIADO!' : 'COPIAR LINK DE INVITACIÓN'}</button></div><div className="pt-4 flex flex-col items-center">{state.connStatus === 'READY' ? <div className="animate-in fade-in duration-500"><div className="text-green-500 font-black uppercase tracking-widest text-sm">¡RIVAL CONECTADO!</div><div className="text-white/40 text-[9px] font-bold animate-pulse uppercase mt-2">Sincronizando tablero...</div></div> : <div className="flex items-center gap-3 text-white/20 animate-pulse"><div className="w-2 h-2 bg-yellow-600 rounded-full"></div><span className="text-[10px] font-black uppercase tracking-widest">Esperando rival... ({state.connStatus})</span></div>}</div></div><button onClick={exitGame} className="mt-10 text-white/30 font-black uppercase text-xs hover:text-white transition-all">Cancelar</button></div>}
+      {(view === 'CONNECTING') && (
+        <div className="absolute inset-0 z-[200] bg-stone-950 flex flex-col items-center justify-center p-8">
+          <div className="w-16 h-16 border-4 border-yellow-600 border-t-transparent rounded-full animate-spin mb-6"></div>
+          <p className="text-white font-black uppercase tracking-widest text-sm animate-pulse">Estableciendo conexión segura...</p>
+          <p className="text-white/20 text-[10px] mt-2 font-black uppercase">{state.connStatus}</p>
+        </div>
+      )}
 
       {view === 'PLAYING' && (
         <>
-          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md safe-top"><button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(true); }} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner active:scale-95 transition-all"><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div></button><div className="flex gap-4 items-center">{((state.gameMode === 'LOCAL') || (state.turn === state.userColor)) && history.length > 0 && <button onClick={(e) => { e.stopPropagation(); undoMove(); }} className="bg-white/10 text-white font-black px-6 py-2.5 rounded-full text-[10px] uppercase border border-white/10 hover:bg-white/20">Deshacer</button>}<div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${(state.gameMode === 'LOCAL' || state.turn === state.userColor) ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>{state.gameMode === 'LOCAL' ? `TURNO: ${state.turn.toUpperCase()}` : (state.turn === state.userColor ? 'TU TURNO' : (state.gameMode === 'AI' ? 'IA PENSANDO...' : 'ESPERANDO...'))}</div><button onClick={(e) => { e.stopPropagation(); rollDice(); }} disabled={state.movesLeft.length > 0 || (state.gameMode !== 'LOCAL' && state.turn !== state.userColor) || !!state.winner} className={`bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] disabled:opacity-20 uppercase shadow-2xl hover:scale-105 active:scale-95 transition-all ${(state.movesLeft.length === 0 && (state.gameMode === 'LOCAL' || state.turn === state.userColor)) ? 'pulse-gold shadow-glow' : ''}`}>Lanzar</button></div></header>
-          <main className="flex-1 relative flex items-center justify-center bg-black overflow-hidden">{isARLoading && <div className="absolute inset-0 z-[150] bg-stone-950 flex flex-col items-center justify-center"><div className="text-white/60 uppercase font-black text-xs italic tracking-widest animate-pulse mb-4">Iniciando AR...</div><button onClick={() => setIsARLoading(false)} className="text-[10px] text-white/30 hover:text-white underline uppercase">Omitir y jugar manual</button></div>}<video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-contain grayscale scale-x-[-1]" autoPlay playsInline muted /><canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />{state.winner && <div className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center backdrop-blur-2xl animate-in fade-in duration-700"><ConfettiRain /><div className="text-center z-[210] p-12 bg-stone-900/40 border border-white/5 rounded-[4rem] shadow-4xl animate-in zoom-in duration-500 delay-200"><h2 className="text-3xl font-black text-yellow-600 uppercase tracking-widest mb-2 italic">¡Felicidades!</h2><h1 className="text-9xl font-black italic text-white uppercase mb-4 tracking-tighter">{state.winner === 'white' ? 'BLANCAS' : 'ROJAS'}</h1><p className="text-white/40 font-black uppercase tracking-widest text-xs mb-12 italic">Victoria</p><div className="flex flex-col gap-4 w-80 mx-auto"><button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); }} className="bg-yellow-600 text-black font-black py-6 rounded-3xl uppercase text-xl shadow-4xl hover:scale-105 active:scale-95 transition-all">Siguiente Partida</button><button onClick={exitGame} className="bg-white/5 text-white/60 font-black py-5 rounded-3xl uppercase text-xs tracking-widest hover:bg-white/10 hover:text-white transition-all border border-white/5">Inicio</button></div></div></div>}</main>
-          <aside className={`fixed inset-y-0 left-0 w-80 bg-stone-950/98 z-[300] border-r border-stone-800 transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'} p-8 flex flex-col shadow-4xl backdrop-blur-3xl safe-top`}><div className="flex justify-between items-center mb-10 pb-6 border-b border-white/5"><h3 className="text-white font-black text-2xl uppercase italic tracking-tighter">OPCIONES</h3><button onClick={(e) => { e.stopPropagation(); setIsMenuOpen(false); }} className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-600 text-white font-bold text-xl hover:bg-red-500 transition-colors shadow-lg">✕</button></div><div className="space-y-10 flex-1"><div className="space-y-4"><div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Tablero</span><span>{Math.round(state.boardOpacity * 100)}%</span></div><input type="range" min="0" max="1" step="0.01" value={state.boardOpacity} onChange={(e) => setState(s => ({...s, boardOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" /></div><div className="space-y-4"><div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>Cámara</span><span>{Math.round(state.cameraOpacity * 100)}%</span></div><input type="range" min="0" max="1" step="0.01" value={state.cameraOpacity} onChange={(e) => setState(s => ({...s, cameraOpacity: parseFloat(e.target.value)}))} onMouseDown={(e) => e.stopPropagation()} className="w-full accent-yellow-600" /></div><div className="pt-4 flex flex-col gap-3">
-                  {state.gameMode === 'ONLINE' && <button onClick={(e) => { e.stopPropagation(); connRef.current?.send({type: 'REQUEST_FULL_STATE'}); }} className="w-full bg-blue-600/10 py-3 rounded-xl text-blue-400 font-black text-[9px] uppercase border border-blue-600/20">Resincronizar</button>}
-                  <button onClick={(e) => { e.stopPropagation(); setState(s => { const next = {...s, isFlipped: !s.isFlipped}; broadcastState(next); return next; }); }} className="w-full bg-stone-800 py-4 rounded-2xl text-white font-black text-[10px] uppercase border border-white/5 hover:bg-stone-700 transition-all">Rotar Tablero</button>
-                  <button onClick={(e) => { e.stopPropagation(); resetGame(state.gameMode); setIsMenuOpen(false); }} className="w-full bg-yellow-600/10 py-5 rounded-2xl text-yellow-600 font-black text-xs uppercase border border-yellow-600/20 hover:bg-yellow-600 hover:text-black transition-all">Reiniciar</button>
-                  <button onClick={exitGame} className="w-full bg-white/5 py-5 rounded-2xl text-white font-black text-xs uppercase border border-white/10 hover:bg-red-600 hover:text-white transition-all">Salir</button>
-                </div></div></aside>
+          <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md safe-top">
+            <button onClick={() => setIsMenuOpen(true)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1">
+              <div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div>
+            </button>
+            <div className="flex gap-4 items-center">
+              <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 ${(state.turn === state.userColor || state.gameMode === 'LOCAL') ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
+                {state.gameMode === 'LOCAL' ? `Turno: ${state.turn.toUpperCase()}` : (state.turn === state.userColor ? 'Tu Turno' : 'Esperando...')}
+              </div>
+              <button onClick={rollDice} disabled={state.movesLeft.length > 0 || (state.gameMode === 'ONLINE' && state.turn !== state.userColor)} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] uppercase shadow-2xl disabled:opacity-20 hover:scale-105 active:scale-95 transition-all">Lanzar</button>
+            </div>
+          </header>
+          <main className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
+            <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-cover scale-x-[-1]" autoPlay playsInline muted />
+            <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
+            {isARLoading && <div className="absolute inset-0 bg-stone-950/80 z-50 flex items-center justify-center text-white/50 font-black uppercase italic tracking-widest text-xs animate-pulse">Iniciando AR...</div>}
+          </main>
+          {isMenuOpen && (
+            <div className="absolute inset-0 z-[300] bg-black/60 backdrop-blur-sm flex justify-start animate-in fade-in duration-300" onClick={() => setIsMenuOpen(false)}>
+              <div className="w-80 bg-stone-900 h-full p-8 flex flex-col gap-10" onClick={e => e.stopPropagation()}>
+                <h3 className="text-2xl font-black italic border-b border-white/5 pb-4">OPCIONES</h3>
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase opacity-40">Opacidad Tablero</label>
+                    <input type="range" min="0" max="1" step="0.1" value={state.boardOpacity} onChange={e => setState(s => ({ ...s, boardOpacity: parseFloat(e.target.value) }))} className="w-full accent-yellow-600" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase opacity-40">Opacidad Cámara</label>
+                    <input type="range" min="0" max="1" step="0.1" value={state.cameraOpacity} onChange={e => setState(s => ({ ...s, cameraOpacity: parseFloat(e.target.value) }))} className="w-full accent-yellow-600" />
+                  </div>
+                </div>
+                <div className="mt-auto flex flex-col gap-2">
+                  <button onClick={() => { setView('HOME'); setIsMenuOpen(false); if (peerRef.current) peerRef.current.destroy(); }} className="bg-red-600/10 text-red-500 font-black py-4 rounded-xl uppercase text-xs border border-red-500/20">Salir de la partida</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
   );
 };
 
-const rootElement = document.getElementById('root');
-if (rootElement) {
-  const root = ReactDOM.createRoot(rootElement);
-  root.render(<App />);
-}
+const root = ReactDOM.createRoot(document.getElementById('root')!);
+root.render(<App />);

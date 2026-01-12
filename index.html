@@ -6,76 +6,46 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Backgammon AR Pro | Online</title>
+    <title>B-GAMMON AR | Pro</title>
     
-    <script>
-      // Limpieza preventiva de Service Workers
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(regs => {
-          for (let reg of regs) reg.unregister();
-        }).catch(() => {});
-      }
-    </script>
-
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
     
-    <!-- MediaPipe con configuración robusta -->
+    <!-- Librerías de Visión y Red -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    
-    <!-- PeerJS desde CDNJS para mayor estabilidad -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 
     <style>
         body, html, #root {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            background: #000;
-            color: #fff;
-            font-family: 'Inter', sans-serif;
-            overflow: hidden;
-            -webkit-tap-highlight-color: transparent;
-            user-select: none;
-            touch-action: none;
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background: #000; color: #fff; font-family: 'Inter', sans-serif;
+            overflow: hidden; -webkit-tap-highlight-color: transparent;
+            user-select: none; touch-action: none;
         }
-        
         @keyframes confetti-fall {
             0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
             100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
         }
         .confetti {
-            position: absolute;
-            width: 10px;
-            height: 10px;
-            top: -10px;
-            z-index: 150;
-            animation: confetti-fall 4s linear infinite;
+            position: absolute; width: 10px; height: 10px; top: -10px;
+            z-index: 150; animation: confetti-fall 4s linear infinite;
         }
-
         @keyframes pulse-gold {
             0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4); }
             50% { box-shadow: 0 0 20px 10px rgba(251, 191, 36, 0); }
         }
         .pulse-gold { animation: pulse-gold 2s infinite; }
         .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
-
-        canvas { outline: none; }
-        
         .safe-top { padding-top: env(safe-area-inset-top); }
-        .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
         
-        canvas, video {
-            -webkit-transform: translate3d(0,0,0);
-            transform: translate3d(0,0,0);
-        }
+        /* Fix para parpadeo en iOS */
+        canvas, video { -webkit-backface-visibility: hidden; backface-visibility: hidden; }
     </style>
 
-<script type="importmap">
+    <script type="importmap">
 {
   "imports": {
     "react": "https://esm.sh/react@19.0.0",
@@ -89,6 +59,6 @@
 </head>
 <body>
     <div id="root"></div>
-    <script type="module" src="./index.tsx"></script>
+    <script type="module" src="index.tsx"></script>
 </body>
 </html>
