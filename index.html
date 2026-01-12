@@ -9,13 +9,13 @@
     <title>B-GAMMON AR | Pro</title>
     
     <script>
-      // Jules Auditor: Limpieza radical de Service Workers para evitar el error 404 en index.tsx
+      // Auditoría Jules: Eliminación radical de Service Workers para entorno Cloud Run
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.getRegistrations().then(registrations => {
           for (const registration of registrations) {
             registration.unregister();
           }
-        }).catch(err => console.error('SW Unregister failed:', err));
+        }).catch(err => {});
       }
     </script>
 
@@ -24,7 +24,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
     
-    <!-- Librerías de Visión y Red -->
+    <!-- Librerías Core -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
@@ -36,14 +36,6 @@
             overflow: hidden; -webkit-tap-highlight-color: transparent;
             user-select: none; touch-action: none;
         }
-        @keyframes confetti-fall {
-            0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
-            100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
-        }
-        .confetti {
-            position: absolute; width: 10px; height: 10px; top: -10px;
-            z-index: 150; animation: confetti-fall 4s linear infinite;
-        }
         @keyframes pulse-gold {
             0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4); }
             50% { box-shadow: 0 0 20px 10px rgba(251, 191, 36, 0); }
@@ -51,7 +43,6 @@
         .pulse-gold { animation: pulse-gold 2s infinite; }
         .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
         .safe-top { padding-top: env(safe-area-inset-top); }
-        
         canvas, video { -webkit-backface-visibility: hidden; backface-visibility: hidden; }
     </style>
 
@@ -69,6 +60,7 @@
 </head>
 <body>
     <div id="root"></div>
-    <script type="module" src="./index.tsx"></script>
+    <!-- Jules Fix: Usar ruta absoluta /index.tsx para evitar 404 con query params -->
+    <script type="module" src="/index.tsx"></script>
 </body>
 </html>
