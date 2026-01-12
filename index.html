@@ -27,7 +27,11 @@
             z-index: 10; pointer-events: none;
         }
         .ui-layer { position: relative; z-index: 20; height: 100%; display: flex; flex-direction: column; }
-        .glass { background: rgba(0,0,0,0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
+        .glass { background: rgba(0,0,0,0.8); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.1); }
+        .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
+        
+        /* Fix para evitar flickering en móviles */
+        * { -webkit-tap-highlight-color: transparent; }
     </style>
 
     <script type="importmap">
@@ -44,7 +48,6 @@
 </head>
 <body>
     <div id="root"></div>
-    <!-- Forzamos la ruta raíz absoluta para evitar el 404 del invitado -->
-    <script type="module" src="./index.tsx"></script>
+    <script type="module" src="/index.tsx"></script>
 </body>
 </html>
