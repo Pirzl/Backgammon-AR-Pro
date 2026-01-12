@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 // --- SILENCIADOR DE ERRORES (Jules Auditor) ---
 window.addEventListener('error', (e) => {
-  const ignored = ['WebSocket', 'PeerJS', 'message channel', 'favicon', 'refresh.js'];
+  const ignored = ['WebSocket', 'PeerJS', 'message channel', 'favicon', 'refresh.js', 'ServiceWorker'];
   if (ignored.some(msg => (e.message || '').includes(msg))) {
     e.stopImmediatePropagation();
     return false;
@@ -54,15 +54,15 @@ const playSound = (type: 'dice' | 'checker' | 'win') => {
 type Player = 'white' | 'red';
 type View = 'HOME' | 'ONLINE_LOBBY' | 'INVITE_SENT' | 'PLAYING' | 'CONNECTING';
 type GameMode = 'AI' | 'ONLINE' | 'LOCAL';
-type ConnectionStatus = 'IDLE' | 'CONNECTING' | 'WAITING_FOR_HOST' | 'SYNCING' | 'READY' | 'ERROR';
+type ConnectionStatus = 'IDLE' | 'SERVER_CONNECTING' | 'WAITING_FOR_HOST' | 'CONNECTING_PEER' | 'SYNCING' | 'READY' | 'ERROR';
 
 const CANVAS_WIDTH = 1200;
 const CANVAS_HEIGHT = 700;
 const BOARD_PADDING = 40;
 const CENTER_BAR_WIDTH = 60;
 const CHECKER_RADIUS = 26;
-const AR_STABILIZATION_THRESHOLD = 5;
-const PINCH_THRESHOLD = 0.5;
+const AR_STABILIZATION_THRESHOLD = 8; // Más frames para evitar jitter
+const PINCH_THRESHOLD = 0.45; // Más estricto para evitar agarres accidentales
 const COLORS = { white: '#ffffff', red: '#ff2222', gold: '#fbbf24' };
 
 interface Point { checkers: Player[]; }
@@ -150,8 +150,8 @@ const hasAnyLegalMove = (state: GameState): boolean => {
 const App: React.FC = () => {
   const [view, setView] = useState<View>('HOME');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
+  const [connLogs, setConnLogs] = useState<string[]>([]);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -174,48 +174,75 @@ const App: React.FC = () => {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
+  const addLog = (msg: string) => setConnLogs(prev => [...prev.slice(-3), msg]);
+
   const broadcastState = useCallback((newState: Partial<GameState>) => {
     if (connRef.current?.open && stateRef.current.gameMode === 'ONLINE') {
       connRef.current.send({ type: 'STATE_UPDATE', payload: newState });
     }
   }, []);
 
-  // --- MULTIPLAYER CORE ---
+  // --- MULTIPLAYER CORE CON HANDSHAKE MEJORADO ---
   const initPeer = useCallback((roomID: string, asHost: boolean) => {
-    if (peerRef.current) peerRef.current.destroy();
+    if (peerRef.current) {
+        try { peerRef.current.destroy(); } catch(e) {}
+    }
     
+    setConnLogs(["Iniciando sistema P2P..."]);
     const id = asHost ? `bgammon-${roomID}-host` : `bgammon-${roomID}-guest-${Math.random().toString(36).substring(7)}`;
-    const peer = new (window as any).Peer(id, { debug: 1 });
+    
+    const peer = new (window as any).Peer(id, { 
+        debug: 1,
+        config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] }
+    });
     peerRef.current = peer;
 
-    peer.on('open', () => {
-      setState(s => ({ ...s, connStatus: asHost ? 'IDLE' : 'CONNECTING' }));
+    peer.on('open', (peerId: string) => {
+      addLog(`Servidor listo: ${asHost ? 'Host' : 'Invitado'}`);
+      setState(s => ({ ...s, connStatus: asHost ? 'IDLE' : 'CONNECTING_PEER' }));
       if (!asHost) connectToHost(roomID);
     });
 
     peer.on('connection', (conn: any) => {
       if (asHost) {
+        addLog("¡Rival encontrado! Sincronizando...");
         connRef.current = conn;
         setupConnection(conn);
       }
     });
 
     peer.on('error', (err: any) => {
-      console.warn('Peer error:', err.type);
+      addLog(`Error: ${err.type}`);
       if (err.type === 'peer-unavailable' && !asHost) {
+        addLog("El Host no está listo. Reintentando...");
+        if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
         reconnectTimeout.current = setTimeout(() => connectToHost(roomID), 3000);
       }
     });
   }, []);
 
   const connectToHost = (roomID: string) => {
+    if (!peerRef.current || peerRef.current.destroyed) return;
+    addLog(`Buscando sala: ${roomID}...`);
     const conn = peerRef.current.connect(`bgammon-${roomID}-host`, { reliable: true });
+    
+    // Timeout de seguridad para la conexión
+    const timeout = setTimeout(() => {
+        if (!conn.open && stateRef.current.connStatus !== 'READY') {
+            addLog("Timeout de conexión. Reintentando...");
+            conn.close();
+            connectToHost(roomID);
+        }
+    }, 8000);
+
     setupConnection(conn);
   };
 
   const setupConnection = (conn: any) => {
     connRef.current = conn;
+    
     conn.on('open', () => {
+      addLog("¡Conexión establecida!");
       setState(s => ({ ...s, connStatus: 'SYNCING' }));
       if (stateRef.current.isHost) {
         conn.send({ type: 'INIT_SYNC', payload: stateRef.current });
@@ -225,12 +252,25 @@ const App: React.FC = () => {
     conn.on('data', (data: any) => {
       const { type, payload } = data;
       if (type === 'INIT_SYNC' || type === 'STATE_UPDATE') {
-        setState(s => ({ ...s, ...payload, userColor: s.userColor, isHost: s.isHost, roomID: s.roomID, connStatus: 'READY' }));
-        if (view === 'CONNECTING' || view === 'INVITE_SENT') setView('PLAYING');
+        setState(s => ({ 
+            ...s, 
+            ...payload, 
+            userColor: s.userColor, 
+            isHost: s.isHost, 
+            roomID: s.roomID, 
+            connStatus: 'READY',
+            // No sobreescribir ajustes locales de cámara si el usuario ya los tocó
+            cameraOpacity: s.cameraOpacity !== 0.35 ? s.cameraOpacity : (payload.cameraOpacity || 0.35),
+            boardOpacity: s.boardOpacity !== 0.9 ? s.boardOpacity : (payload.boardOpacity || 0.9)
+        }));
+        if (view === 'CONNECTING' || view === 'INVITE_SENT' || view === 'ONLINE_LOBBY') {
+            setView('PLAYING');
+        }
       }
     });
 
     conn.on('close', () => {
+      addLog("Conexión perdida. Reconectando...");
       setState(s => ({ ...s, connStatus: 'ERROR' }));
       if (!stateRef.current.isHost) setTimeout(() => connectToHost(stateRef.current.roomID), 2000);
     });
@@ -260,7 +300,7 @@ const App: React.FC = () => {
     if (!Hands || !Camera || !videoRef.current) { setIsARLoading(false); return; }
 
     const hands = new Hands({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.75, minTrackingConfidence: 0.75 });
 
     hands.onResults((results: any) => {
       if (!results.multiHandLandmarks?.length) { rawHand.current.isDetected = false; return; }
@@ -330,14 +370,14 @@ const App: React.FC = () => {
 
   const getZone = useCallback((x: number, y: number, isRed: boolean, isFlipped: boolean) => {
     const xBase = (CANVAS_WIDTH - 900) / 2 + 50;
-    // Zona de salida SIEMPRE a la izquierda (x < xBase)
-    if (x < xBase - 10) return { type: 'off' };
+    // REQUISITO: Salida SIEMPRE a la izquierda del tablero
+    if (x < xBase - 15) return { type: 'off' };
     
     for (let i = 0; i < 24; i++) {
       const pos = getPos(i, isRed, isFlipped);
       if (Math.abs(x - pos.x) < 35) {
-        if (pos.isTop && y < CANVAS_HEIGHT / 2) return { type: 'point', index: i };
-        if (!pos.isTop && y > CANVAS_HEIGHT / 2) return { type: 'point', index: i };
+        if (pos.isTop && y < CANVAS_HEIGHT / 2 + 100) return { type: 'point', index: i };
+        if (!pos.isTop && y > CANVAS_HEIGHT / 2 - 100) return { type: 'point', index: i };
       }
     }
     if (Math.abs(x - (xBase + 450)) < 30) return { type: 'bar' };
@@ -354,10 +394,9 @@ const App: React.FC = () => {
       const s = stateRef.current;
       const isRed = s.userColor === 'red';
 
-      // Estabilización AR
       if (rawHand.current.isDetected) {
-        smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.4;
-        smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.4;
+        smoothHand.current.x += (rawHand.current.x - smoothHand.current.x) * 0.35;
+        smoothHand.current.y += (rawHand.current.y - smoothHand.current.y) * 0.35;
         if (rawHand.current.isPinching) pinchBuffer.current++; else pinchBuffer.current = 0;
 
         const stabilizedPinch = pinchBuffer.current >= AR_STABILIZATION_THRESHOLD;
@@ -383,11 +422,8 @@ const App: React.FC = () => {
 
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
       const xB = (CANVAS_WIDTH - 900) / 2 + 50;
-
-      // Tablero
       ctx.save(); ctx.globalAlpha = s.boardOpacity; ctx.fillStyle = '#1c1917'; ctx.fillRect(xB, BOARD_PADDING, 900, CANVAS_HEIGHT - BOARD_PADDING * 2); ctx.restore();
 
-      // Puntos y Fichas
       for (let i = 0; i < 24; i++) {
         const pos = getPos(i, isRed, s.isFlipped);
         ctx.fillStyle = i % 2 === 0 ? 'rgba(35, 22, 12, 0.9)' : 'rgba(190, 160, 110, 0.7)';
@@ -398,7 +434,6 @@ const App: React.FC = () => {
         });
       }
 
-      // Barra Central
       ctx.fillStyle = '#0a0a0a'; ctx.fillRect(xB + 450 - 30, BOARD_PADDING, 60, CANVAS_HEIGHT - BOARD_PADDING * 2);
       ['white', 'red'].forEach(p => {
         const count = s.bar[p as Player];
@@ -414,17 +449,14 @@ const App: React.FC = () => {
       for(let i=0; i<s.off.white; i++) drawChecker(ctx, OFF_X, CANVAS_HEIGHT - 80 - i*15, 'white', true);
       for(let i=0; i<s.off.red; i++) drawChecker(ctx, OFF_X, 80 + i*15, 'red', true);
 
-      // Dados
       if (s.dice.length) s.dice.forEach((d, i) => drawDie(ctx, xB + 450 + (i === 0 ? -180 : 180), CANVAS_HEIGHT/2, d, s.turn));
 
-      // Ficha arrastrada
       if (grabbedRef.current) {
         const dx = grabbedRef.current.isMouse ? mousePos.current.x : smoothHand.current.x;
         const dy = grabbedRef.current.isMouse ? mousePos.current.y : smoothHand.current.y;
-        drawChecker(ctx, dx, dy + grabbedRef.current.offsetY, grabbedRef.current.player, false, true);
+        drawChecker(ctx, dx, dy + (grabbedRef.current.isMouse ? -40 : 0), grabbedRef.current.player, false, true);
       }
 
-      // Cursor AR
       if (rawHand.current.isDetected) {
         ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 10 : 20, 0, Math.PI * 2);
         ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : '#fff'; ctx.lineWidth = 3; ctx.stroke();
@@ -455,7 +487,7 @@ const App: React.FC = () => {
 
   const rollDice = useCallback(() => {
     const s = stateRef.current;
-    if (s.movesLeft.length > 0 || s.winner || (s.gameMode !== 'LOCAL' && s.turn !== s.userColor)) return;
+    if (s.movesLeft.length > 0 || s.winner || (s.gameMode === 'ONLINE' && s.turn !== s.userColor)) return;
     playSound('dice');
     const d1 = Math.floor(Math.random() * 6) + 1;
     const d2 = Math.floor(Math.random() * 6) + 1;
@@ -471,9 +503,9 @@ const App: React.FC = () => {
         const { x, y } = { x: (e.clientX / window.innerWidth) * CANVAS_WIDTH, y: (e.clientY / window.innerHeight) * CANVAS_HEIGHT };
         const zone = getZone(x, y, stateRef.current.userColor === 'red', stateRef.current.isFlipped);
         if (zone?.type === 'bar' && stateRef.current.bar[stateRef.current.turn] > 0) {
-          grabbedRef.current = { player: stateRef.current.turn, fromIndex: -1, x, y, isMouse: true, offsetY: -40 };
+          grabbedRef.current = { player: stateRef.current.turn, fromIndex: -1, x, y, isMouse: true, offsetY: 0 };
         } else if (zone?.type === 'point' && stateRef.current.points[zone.index!].checkers.includes(stateRef.current.turn)) {
-          grabbedRef.current = { player: stateRef.current.turn, fromIndex: zone.index!, x, y, isMouse: true, offsetY: -40 };
+          grabbedRef.current = { player: stateRef.current.turn, fromIndex: zone.index!, x, y, isMouse: true, offsetY: 0 };
         }
       }}
       onPointerUp={(e) => {
@@ -514,8 +546,8 @@ const App: React.FC = () => {
               initPeer(rid, true);
               setView('INVITE_SENT');
             }} className="w-full bg-yellow-600 text-black font-black py-6 rounded-2xl uppercase shadow-xl">Crear Nueva Sala</button>
+            <button onClick={() => setView('HOME')} className="w-full bg-white/5 text-white/40 font-black py-4 rounded-xl uppercase text-xs">Atrás</button>
           </div>
-          <button onClick={() => setView('HOME')} className="mt-8 text-white/30 uppercase font-black text-xs hover:text-white">Atrás</button>
         </div>
       )}
 
@@ -523,66 +555,86 @@ const App: React.FC = () => {
         <div className="absolute inset-0 z-[100] bg-stone-950 flex flex-col items-center justify-center p-8">
           <div className="bg-stone-900 p-12 rounded-[4rem] w-full max-w-lg border border-white/5 text-center space-y-8">
             <h3 className="text-3xl font-black text-white italic">¡SALA CREADA!</h3>
-            <div className="bg-black/50 p-6 rounded-2xl font-mono text-yellow-600 break-all select-all">
+            <div className="bg-black/50 p-6 rounded-2xl font-mono text-yellow-600 break-all select-all text-xs">
               {`${window.location.origin}${window.location.pathname}?room=${state.roomID}`}
             </div>
             <button onClick={() => { 
               navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${state.roomID}`);
               setCopyFeedback(true); setTimeout(() => setCopyFeedback(false), 2000);
-            }} className={`w-full py-5 rounded-2xl font-black uppercase transition-all ${copyFeedback ? 'bg-green-600' : 'bg-white text-black'}`}>
-              {copyFeedback ? '¡COPIADO!' : 'COPIAR LINK'}
+            }} className={`w-full py-5 rounded-2xl font-black uppercase transition-all shadow-xl ${copyFeedback ? 'bg-green-600' : 'bg-white text-black hover:bg-yellow-600 hover:text-white'}`}>
+              {copyFeedback ? '¡LINK COPIADO!' : 'COPIAR LINK DE INVITACIÓN'}
             </button>
-            <div className="flex items-center justify-center gap-3 text-white/20 animate-pulse">
-              <div className="w-2 h-2 bg-yellow-600 rounded-full"></div>
-              <span className="text-[10px] font-black uppercase tracking-widest">Esperando rival... ({state.connStatus})</span>
+            <div className="flex flex-col items-center gap-2">
+                <div className="flex items-center gap-3 text-white/40">
+                  <div className="w-2 h-2 bg-yellow-600 rounded-full animate-pulse"></div>
+                  <span className="text-[10px] font-black uppercase tracking-widest">Esperando rival...</span>
+                </div>
+                {connLogs.map((log, i) => <div key={i} className="text-[9px] text-white/20 uppercase font-bold">{log}</div>)}
             </div>
           </div>
-          <button onClick={() => setView('HOME')} className="mt-8 text-white/30 uppercase text-xs">Cancelar</button>
+          <button onClick={() => setView('HOME')} className="mt-8 text-white/30 uppercase text-xs hover:text-white underline">Cancelar</button>
         </div>
       )}
 
       {(view === 'CONNECTING') && (
         <div className="absolute inset-0 z-[200] bg-stone-950 flex flex-col items-center justify-center p-8">
           <div className="w-16 h-16 border-4 border-yellow-600 border-t-transparent rounded-full animate-spin mb-6"></div>
-          <p className="text-white font-black uppercase tracking-widest text-sm animate-pulse">Estableciendo conexión segura...</p>
-          <p className="text-white/20 text-[10px] mt-2 font-black uppercase">{state.connStatus}</p>
+          <p className="text-white font-black uppercase tracking-widest text-sm animate-pulse mb-4">ESTABLECIENDO CONEXIÓN SEGURA...</p>
+          <div className="flex flex-col items-center gap-1">
+            {connLogs.map((log, i) => <div key={i} className="text-[10px] text-yellow-600/50 uppercase font-black tracking-widest">{log}</div>)}
+          </div>
+          <button onClick={() => setView('HOME')} className="mt-12 text-white/20 uppercase text-[9px] hover:text-white">Cancelar Intento</button>
         </div>
       )}
 
       {view === 'PLAYING' && (
         <>
           <header className="h-20 bg-stone-900/90 border-b border-white/5 flex items-center justify-between px-8 z-50 backdrop-blur-md safe-top">
-            <button onClick={() => setIsMenuOpen(true)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1">
+            <button onClick={() => setIsMenuOpen(true)} className="w-12 h-12 bg-stone-800 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner hover:scale-105 active:scale-95 transition-all">
               <div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div><div className="w-6 h-0.5 bg-white"></div>
             </button>
             <div className="flex gap-4 items-center">
-              <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 ${(state.turn === state.userColor || state.gameMode === 'LOCAL') ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
-                {state.gameMode === 'LOCAL' ? `Turno: ${state.turn.toUpperCase()}` : (state.turn === state.userColor ? 'Tu Turno' : 'Esperando...')}
+              <div className={`px-8 py-2.5 rounded-full font-black text-[11px] uppercase border-2 shadow-2xl transition-all ${(state.turn === state.userColor || state.gameMode === 'LOCAL') ? 'bg-yellow-600 text-black border-yellow-600' : 'text-white/30 border-white/10'}`}>
+                {state.gameMode === 'LOCAL' ? `Turno: ${state.turn.toUpperCase()}` : (state.turn === state.userColor ? 'TU TURNO' : 'ESPERANDO...')}
               </div>
-              <button onClick={rollDice} disabled={state.movesLeft.length > 0 || (state.gameMode === 'ONLINE' && state.turn !== state.userColor)} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] uppercase shadow-2xl disabled:opacity-20 hover:scale-105 active:scale-95 transition-all">Lanzar</button>
+              <button onClick={rollDice} disabled={state.movesLeft.length > 0 || (state.gameMode === 'ONLINE' && state.turn !== state.userColor) || !!state.winner} className="bg-white text-black font-black px-8 py-2.5 rounded-full text-[11px] uppercase shadow-2xl disabled:opacity-20 hover:scale-105 active:scale-95 transition-all">Lanzar</button>
             </div>
           </header>
           <main className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
             <video ref={videoRef} style={{ opacity: state.cameraOpacity }} className="absolute inset-0 w-full h-full object-cover scale-x-[-1]" autoPlay playsInline muted />
             <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="z-20 w-full h-full object-contain pointer-events-none" />
-            {isARLoading && <div className="absolute inset-0 bg-stone-950/80 z-50 flex items-center justify-center text-white/50 font-black uppercase italic tracking-widest text-xs animate-pulse">Iniciando AR...</div>}
+            {isARLoading && <div className="absolute inset-0 bg-stone-950/80 z-50 flex flex-center items-center justify-center text-white/50 font-black uppercase italic tracking-widest text-xs animate-pulse">Iniciando AR...</div>}
+            {state.winner && (
+                <div className="absolute inset-0 z-[200] bg-black/90 flex flex-col items-center justify-center backdrop-blur-xl">
+                    <h2 className="text-4xl font-black text-yellow-600 uppercase mb-2">¡PARTIDA FINALIZADA!</h2>
+                    <h1 className="text-8xl font-black italic text-white uppercase mb-12 tracking-tighter">GANAN {state.winner === 'white' ? 'BLANCAS' : 'ROJAS'}</h1>
+                    <button onClick={() => setView('HOME')} className="bg-white text-black font-black px-12 py-5 rounded-2xl uppercase shadow-glow">Volver al Inicio</button>
+                </div>
+            )}
           </main>
           {isMenuOpen && (
             <div className="absolute inset-0 z-[300] bg-black/60 backdrop-blur-sm flex justify-start animate-in fade-in duration-300" onClick={() => setIsMenuOpen(false)}>
-              <div className="w-80 bg-stone-900 h-full p-8 flex flex-col gap-10" onClick={e => e.stopPropagation()}>
-                <h3 className="text-2xl font-black italic border-b border-white/5 pb-4">OPCIONES</h3>
-                <div className="space-y-6">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black uppercase opacity-40">Opacidad Tablero</label>
-                    <input type="range" min="0" max="1" step="0.1" value={state.boardOpacity} onChange={e => setState(s => ({ ...s, boardOpacity: parseFloat(e.target.value) }))} className="w-full accent-yellow-600" />
+              <div className="w-80 bg-stone-900 h-full p-8 flex flex-col gap-10 shadow-4xl border-r border-white/5" onClick={e => e.stopPropagation()}>
+                <h3 className="text-2xl font-black italic border-b border-white/5 pb-4 tracking-tighter">AJUSTES</h3>
+                <div className="space-y-8">
+                  <div className="space-y-4">
+                    <div className="flex justify-between text-[10px] font-black uppercase opacity-40">
+                        <span>Opacidad Tablero</span>
+                        <span>{Math.round(state.boardOpacity * 100)}%</span>
+                    </div>
+                    <input type="range" min="0" max="1" step="0.05" value={state.boardOpacity} onChange={e => setState(s => ({ ...s, boardOpacity: parseFloat(e.target.value) }))} className="w-full accent-yellow-600" />
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black uppercase opacity-40">Opacidad Cámara</label>
-                    <input type="range" min="0" max="1" step="0.1" value={state.cameraOpacity} onChange={e => setState(s => ({ ...s, cameraOpacity: parseFloat(e.target.value) }))} className="w-full accent-yellow-600" />
+                  <div className="space-y-4">
+                    <div className="flex justify-between text-[10px] font-black uppercase opacity-40">
+                        <span>Opacidad Cámara</span>
+                        <span>{Math.round(state.cameraOpacity * 100)}%</span>
+                    </div>
+                    <input type="range" min="0" max="1" step="0.05" value={state.cameraOpacity} onChange={e => setState(s => ({ ...s, cameraOpacity: parseFloat(e.target.value) }))} className="w-full accent-yellow-600" />
                   </div>
                 </div>
-                <div className="mt-auto flex flex-col gap-2">
-                  <button onClick={() => { setView('HOME'); setIsMenuOpen(false); if (peerRef.current) peerRef.current.destroy(); }} className="bg-red-600/10 text-red-500 font-black py-4 rounded-xl uppercase text-xs border border-red-500/20">Salir de la partida</button>
+                <div className="mt-auto flex flex-col gap-3">
+                  <button onClick={() => { setView('HOME'); setIsMenuOpen(false); if (peerRef.current) peerRef.current.destroy(); }} className="bg-red-600/10 text-red-500 font-black py-4 rounded-xl uppercase text-xs border border-red-500/20 hover:bg-red-600 hover:text-white transition-all">Terminar Partida</button>
+                  <button onClick={() => setIsMenuOpen(false)} className="bg-white/5 text-white/40 font-black py-4 rounded-xl uppercase text-[10px]">Cerrar Menú</button>
                 </div>
               </div>
             </div>

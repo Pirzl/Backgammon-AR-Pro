@@ -8,6 +8,17 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>B-GAMMON AR | Pro</title>
     
+    <script>
+      // Jules Auditor: Limpieza radical de Service Workers para evitar el error 404 en index.tsx
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(registrations => {
+          for (const registration of registrations) {
+            registration.unregister();
+          }
+        }).catch(err => console.error('SW Unregister failed:', err));
+      }
+    </script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,7 +52,6 @@
         .shadow-glow { box-shadow: 0 0 30px rgba(251, 191, 36, 0.4); }
         .safe-top { padding-top: env(safe-area-inset-top); }
         
-        /* Fix para parpadeo en iOS */
         canvas, video { -webkit-backface-visibility: hidden; backface-visibility: hidden; }
     </style>
 
@@ -59,6 +69,6 @@
 </head>
 <body>
     <div id="root"></div>
-    <script type="module" src="index.tsx"></script>
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>
