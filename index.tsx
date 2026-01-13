@@ -2,40 +2,43 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
-const CANVAS_WIDTH = 1200;
+// --- CONFIGURACIÓN ---
+const CANVAS_WIDTH = 1300;
 const CANVAS_HEIGHT = 800;
+const PINCH_THRESHOLD = 0.04; 
 
 const THEME = {
   pointLight: '#A88B66',
   pointDark: '#2C1D14',
   whiteChecker: ['#FFFFFF', '#E0E0E0'],
   redChecker: ['#FF3B30', '#991100'],
-  gold: '#fbbf24'
+  gold: '#fbbf24',
+  success: '#22c55e'
 };
 
-// Generador de sonidos sintéticos para evitar dependencias de archivos externos
-const playSound = (type: 'clack' | 'dice') => {
-  const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  if (type === 'clack') {
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(150, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
-  } else {
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(100, ctx.currentTime);
-    gain.gain.setValueAtTime(0.1, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.05);
-  }
-
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start();
-  osc.stop(ctx.currentTime + 0.1);
+const playSound = (type: 'clack' | 'dice' | 'win' | 'grab') => {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    if (type === 'clack') {
+      osc.frequency.setValueAtTime(150, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+    } else if (type === 'grab') {
+      osc.frequency.setValueAtTime(400, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.05);
+    } else if (type === 'win') {
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    } else {
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(100, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.05);
+    }
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.2);
+  } catch(e) {}
 };
 
 const getInitialState = () => {
@@ -46,61 +49,65 @@ const getInitialState = () => {
   return {
     points: p, bar: { white: 0, red: 0 }, off: { white: 0, red: 0 },
     turn: 'white', dice: [], movesLeft: [], winner: null,
-    gameMode: 'LOCAL', userColor: 'white', roomID: ''
+    gameMode: 'LOCAL', roomID: ''
   };
 };
 
 const App = () => {
   const [view, setView] = useState('HOME');
   const [state, setState] = useState(getInitialState());
-  const [camOpacity, setCamOpacity] = useState(0.4);
-  const [boardOpacity, setBoardOpacity] = useState(0.9);
+  const [camOpacity, setCamOpacity] = useState(0.5);
+  const [boardOpacity, setBoardOpacity] = useState(0.85);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isRotated, setIsRotated] = useState(false);
-  const [selectedPoint, setSelectedPoint] = useState<number | 'bar' | null>(null);
-  const [handPos, setHandPos] = useState<{ x: number, y: number } | null>(null);
+  const [handPos, setHandPos] = useState<{ x: number, y: number, isPinching: boolean } | null>(null);
+  const [myColor] = useState<'white' | 'red'>('white');
+  const [isCopied, setIsCopied] = useState(false);
+  
+  const stateRef = useRef(state);
+  const selectedPointRef = useRef<number | 'bar' | null>(null);
+  const [selectedPointUI, setSelectedPointUI] = useState<number | 'bar' | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const lastHandClickRef = useRef<number>(0);
+  const wasPinchingRef = useRef(false);
+  const cpuProcessingRef = useRef(false);
 
-  // --- LÓGICA DE COORDENADAS CON ROTACIÓN ---
+  useEffect(() => { stateRef.current = state; }, [state]);
+
   const getPointCoords = (i: number) => {
-    // Si está rotado, invertimos el índice del punto visualmente
-    const visualIdx = isRotated ? 23 - i : i;
-    const isTop = visualIdx >= 12;
-    const col = isTop ? visualIdx - 12 : 11 - visualIdx;
+    const isTop = i >= 12;
+    const col = isTop ? i - 12 : 11 - i;
     const xBase = 110 + col * 80;
     const x = col >= 6 ? xBase + 60 : xBase;
-    return { x, yBase: isTop ? 50 : 750, yTip: isTop ? 380 : 420, isTop };
+    return { x, yBase: isTop ? 50 : 750, yTip: isTop ? 350 : 450, isTop };
   };
 
   const drawChecker = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, isSelected = false) => {
     const colors = color === 'white' ? THEME.whiteChecker : THEME.redChecker;
-    const grad = ctx.createRadialGradient(x - 8, y - 8, 2, x, y, 22);
+    const radius = 22;
+    const grad = ctx.createRadialGradient(x - 5, y - 5, 2, x, y, radius);
     grad.addColorStop(0, colors[0]);
     grad.addColorStop(1, colors[1]);
     
     if (isSelected) {
       ctx.save();
       ctx.shadowColor = THEME.gold;
-      ctx.shadowBlur = 35;
+      ctx.shadowBlur = 25;
       ctx.strokeStyle = THEME.gold;
-      ctx.lineWidth = 5;
-      ctx.beginPath(); ctx.arc(x, y, 25, 0, Math.PI * 2); ctx.stroke();
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(x, y, radius + 4, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
     ctx.beginPath();
-    ctx.arc(x, y, 22, 0, Math.PI * 2);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fillStyle = grad;
-    ctx.shadowColor = 'rgba(0,0,0,0.6)';
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetY = 5;
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 3;
     ctx.fill();
-    ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-    ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+    ctx.stroke();
   };
 
   const render = useCallback(() => {
@@ -108,74 +115,127 @@ const App = () => {
     if (!ctx) return;
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
+    const boardWidth = CANVAS_WIDTH - 150;
+    const barX = boardWidth / 2 + 50;
+
     // Fondo Tablero
     ctx.fillStyle = `rgba(10, 10, 10, ${boardOpacity})`;
-    ctx.fillRect(50, 50, CANVAS_WIDTH - 100, CANVAS_HEIGHT - 100);
+    ctx.fillRect(50, 50, boardWidth, CANVAS_HEIGHT - 100);
     
     // Puntos
     for (let i = 0; i < 24; i++) {
       const { x, yBase, yTip, isTop } = getPointCoords(i);
-      // Alternar color de los triángulos basándonos en el índice real para que la lógica de juego no cambie
       ctx.fillStyle = (i % 2 === 0 ? THEME.pointDark : THEME.pointLight);
       ctx.beginPath();
       ctx.moveTo(x - 36, yBase); ctx.lineTo(x + 36, yBase); ctx.lineTo(x, yTip);
       ctx.fill();
 
-      state.points[i].checkers.forEach((col: string, j: number) => {
-        const y = isTop ? 95 + (j * 44) : 705 - (j * 44);
-        const isThisSelected = selectedPoint === i && j === state.points[i].checkers.length - 1;
+      state.points[i].checkers.forEach((col, j) => {
+        const y = isTop ? 95 + (j * 42) : 705 - (j * 42);
+        const isThisSelected = selectedPointUI === i && j === state.points[i].checkers.length - 1;
         drawChecker(ctx, x, y, col, isThisSelected);
       });
     }
 
-    // Barra central
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(CANVAS_WIDTH/2 - 30, 50, 60, CANVAS_HEIGHT - 100);
-    ['white', 'red'].forEach((col, idx) => {
+    // Barra
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(barX - 30, 50, 60, CANVAS_HEIGHT - 100);
+    ['white', 'red'].forEach((col) => {
       for(let i=0; i<state.bar[col]; i++) {
-        // En la barra, blanco arriba y rojo abajo normalmente, pero si rotamos lo invertimos visualmente
-        const isWhiteOnTop = !isRotated;
-        const basePos = (col === 'white') === isWhiteOnTop ? 250 : 550;
-        const direction = (col === 'white') === isWhiteOnTop ? -1 : 1;
-        const y = basePos + (i * 42 * direction);
-        drawChecker(ctx, CANVAS_WIDTH/2, y, col, selectedPoint === 'bar' && col === state.turn);
+        const y = (col === 'white' ? 150 : 650) + (i * 44 * (col === 'white' ? 1 : -1));
+        drawChecker(ctx, barX, y, col, selectedPointUI === 'bar' && col === state.turn);
       }
     });
 
-    // Dados de colores según el turno
-    state.dice.forEach((d, i) => {
-      const dx = CANVAS_WIDTH/2 - 130 + (i * 180), dy = CANVAS_HEIGHT/2 - 45;
-      const diceColor = state.turn === 'white' ? '#fff' : '#FF3B30';
-      const textColor = state.turn === 'white' ? '#000' : '#fff';
-      
-      ctx.fillStyle = diceColor;
-      ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(0,0,0,0.5)';
-      ctx.beginPath(); 
-      (ctx as any).roundRect ? (ctx as any).roundRect(dx, dy, 90, 90, 15) : ctx.fillRect(dx, dy, 90, 90);
-      ctx.fill(); ctx.shadowBlur = 0;
-      
-      ctx.fillStyle = textColor; ctx.font = '900 48px Inter'; ctx.textAlign = 'center';
-      ctx.fillText(d.toString(), dx + 45, dy + 62);
+    // Zona Bearing Off
+    const offX = boardWidth + 100;
+    ctx.fillStyle = 'rgba(255,255,255,0.03)';
+    ctx.fillRect(offX - 40, 50, 80, CANVAS_HEIGHT - 100);
+    ['white', 'red'].forEach(col => {
+        const count = state.off[col];
+        const baseY = col === 'white' ? 750 : 50;
+        const dir = col === 'white' ? -1 : 1;
+        for(let i=0; i<count; i++) {
+            ctx.fillStyle = col === 'white' ? '#FFF' : '#FF3B30';
+            ctx.fillRect(offX - 30, baseY + (i * 12 * dir), 60, 10);
+        }
     });
 
-    // Puntero de mano AR
+    // Dados
+    state.dice.forEach((d, i) => {
+      const dx = barX - 100 + (i * 120), dy = CANVAS_HEIGHT/2 - 40;
+      ctx.fillStyle = state.turn === 'white' ? '#fff' : '#FF3B30';
+      ctx.beginPath(); ctx.roundRect?.(dx, dy, 80, 80, 12); ctx.fill();
+      ctx.fillStyle = state.turn === 'white' ? '#000' : '#fff';
+      ctx.font = '900 40px Inter'; ctx.textAlign = 'center';
+      ctx.fillText(d.toString(), dx + 40, dy + 55);
+    });
+
+    // Puntero AR (Corregido el mirroring visual)
     if (handPos) {
       ctx.save();
-      ctx.shadowColor = THEME.gold;
-      ctx.shadowBlur = 15;
-      ctx.fillStyle = THEME.gold;
-      ctx.beginPath(); ctx.arc(handPos.x, handPos.y, 14, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.shadowColor = handPos.isPinching ? THEME.gold : '#fff';
+      ctx.shadowBlur = handPos.isPinching ? 30 : 15;
+      ctx.fillStyle = handPos.isPinching ? THEME.gold : 'rgba(255,255,255,0.8)';
+      ctx.beginPath(); ctx.arc(handPos.x, handPos.y, handPos.isPinching ? 22 : 14, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
       ctx.restore();
     }
-  }, [state, selectedPoint, boardOpacity, handPos, isRotated]);
+  }, [state, selectedPointUI, boardOpacity, handPos]);
 
   useEffect(() => {
     const anim = requestAnimationFrame(render);
     return () => cancelAnimationFrame(anim);
   }, [render]);
 
-  // --- HAND TRACKING INTEGRATION ---
+  // IA - CPU
+  useEffect(() => {
+    if (state.gameMode === 'CPU' && state.turn === 'red' && !state.winner && !cpuProcessingRef.current) {
+        const cpuLogic = async () => {
+            cpuProcessingRef.current = true;
+            await new Promise(r => setTimeout(r, 1200));
+            
+            if (state.dice.length === 0) {
+                rollDice();
+                cpuProcessingRef.current = false;
+                return;
+            }
+
+            let moved = false;
+            const currentMoves = [...state.movesLeft].sort((a,b) => b-a);
+            
+            for (const die of currentMoves) {
+                if (state.bar.red > 0) {
+                    const target = die - 1;
+                    if (isValidMove('red', 'bar', target)) {
+                        executeMove('bar', target, die);
+                        moved = true; break;
+                    }
+                } else {
+                    for (let i = 0; i < 24; i++) {
+                        if (state.points[i].checkers.includes('red')) {
+                            const target = i + die;
+                            if (target < 24 && isValidMove('red', i, target)) {
+                                executeMove(i, target, die);
+                                moved = true; break;
+                            } else if (target >= 24 && canBearOff('red')) {
+                                executeMove(i, 'off', die);
+                                moved = true; break;
+                            }
+                        }
+                    }
+                }
+                if (moved) break;
+            }
+
+            if (!moved) setState(s => ({...s, turn: 'white', dice: [], movesLeft: []}));
+            cpuProcessingRef.current = false;
+        };
+        cpuLogic();
+    }
+  }, [state.turn, state.dice, state.movesLeft]);
+
+  // HAND TRACKING
   useEffect(() => {
     if (view !== 'PLAYING') return;
 
@@ -183,252 +243,257 @@ const App = () => {
       locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
-    hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.6,
-      minTrackingConfidence: 0.6
-    });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
 
     hands.onResults((results: any) => {
       if (results.multiHandLandmarks?.length > 0) {
-        const landmark = results.multiHandLandmarks[0][8]; // Punta del índice
-        const x = (1 - landmark.x) * CANVAS_WIDTH;
-        const y = landmark.y * CANVAS_HEIGHT;
-        setHandPos({ x, y });
+        const marks = results.multiHandLandmarks[0];
+        const tip = marks[8]; const thumb = marks[4];
+        const dist = Math.sqrt(Math.pow(tip.x - thumb.x, 2) + Math.pow(tip.y - thumb.y, 2));
+        const isPinching = dist < PINCH_THRESHOLD;
 
-        // Simular clic si el dedo se mantiene quieto o si hay un gesto (usaremos proximidad temporal)
-        const now = Date.now();
-        if (now - lastHandClickRef.current > 1200) { // Un clic cada 1.2s para evitar spam
-          // Comprobar si está sobre algo interactuable
-          handleInteraction(x, y);
-          lastHandClickRef.current = now;
+        // CORRECCIÓN COORDINADAS ESPEJO: (1 - tip.x) para alinear con scaleX(-1) del video
+        const x = (1 - tip.x) * CANVAS_WIDTH;
+        const y = tip.y * CANVAS_HEIGHT;
+        setHandPos({ x, y, isPinching });
+
+        if (isPinching && !wasPinchingRef.current) {
+            playSound('grab');
+            handlePinchStart(x, y);
+        } else if (!isPinching && wasPinchingRef.current) {
+            handlePinchEnd(x, y);
         }
+        wasPinchingRef.current = isPinching;
       } else {
         setHandPos(null);
+        wasPinchingRef.current = false;
       }
     });
 
     const camera = new (window as any).Camera(videoRef.current, {
-      onFrame: async () => { if(hands) await hands.send({ image: videoRef.current! }); },
-      width: 640, height: 480
+      onFrame: async () => { if(videoRef.current) await hands.send({ image: videoRef.current }); },
+      width: 1280, height: 720
     });
     camera.start();
 
-    return () => camera.stop();
+    return () => { camera.stop(); hands.close(); };
   }, [view]);
 
-  // --- LÓGICA DE IA ---
-  useEffect(() => {
-    if (state.turn === 'red' && state.gameMode === 'AI' && !state.winner) {
-      setTimeout(() => {
-        const ns = JSON.parse(JSON.stringify(state));
-        if (ns.dice.length === 0) {
-          rollDice();
-          return;
-        }
+  // RATÓN / TOUCH INTERACTION
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+    const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+    setHandPos({ x, y, isPinching: true });
+    handlePinchStart(x, y);
+  };
 
-        let moved = false;
-        for (const die of ns.movesLeft) {
-          if (ns.bar.red > 0) {
-            const target = die - 1;
-            if (ns.points[target].checkers.length <= 1 || ns.points[target].checkers[0] === 'red') {
-              executeMove('bar', target, die, true); moved = true; break;
-            }
-          } else {
-            for (let i = 0; i < 24; i++) {
-              if (ns.points[i].checkers.includes('red')) {
-                const target = i + die;
-                if (target < 24 && (ns.points[target].checkers.length <= 1 || ns.points[target].checkers[0] === 'red')) {
-                  executeMove(i, target, die, true); moved = true; break;
-                }
-              }
-            }
-          }
-          if (moved) break;
-        }
-        if (!moved) { 
-          setState(s => ({ ...s, turn: 'white', dice: [], movesLeft: [] }));
-        }
-      }, 1200);
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+    const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+    handlePinchEnd(x, y);
+    setHandPos(null);
+  };
+
+  const handlePinchStart = (x: number, y: number) => {
+    const s = stateRef.current;
+    if (s.turn !== myColor && s.gameMode !== 'LOCAL') return;
+
+    if (x > 500 && x < 800 && y > 300 && y < 500) {
+        if (s.movesLeft.length === 0) rollDice();
+        return;
     }
-  }, [state.turn, state.dice, state.gameMode]);
+
+    let hit: number | 'bar' | null = null;
+    const barX = (CANVAS_WIDTH - 150) / 2 + 50;
+    
+    if (Math.abs(x - barX) < 60) {
+        if (s.bar[s.turn] > 0) hit = 'bar';
+    } else {
+        for (let i = 0; i < 24; i++) {
+            const p = getPointCoords(i);
+            if (Math.abs(x - p.x) < 50 && ((p.isTop && y < 400) || (!p.isTop && y > 400))) {
+                if (s.points[i].checkers.includes(s.turn)) {
+                    if (s.bar[s.turn] > 0) return;
+                    hit = i;
+                }
+                break;
+            }
+        }
+    }
+    selectedPointRef.current = hit;
+    setSelectedPointUI(hit);
+  };
+
+  const handlePinchEnd = (x: number, y: number) => {
+    const from = selectedPointRef.current;
+    const s = stateRef.current;
+    if (from === null) return;
+
+    let to: number | 'off' | null = null;
+    if (x > CANVAS_WIDTH - 150) to = 'off';
+    else {
+        for (let i = 0; i < 24; i++) {
+            const p = getPointCoords(i);
+            if (Math.abs(x - p.x) < 50 && ((p.isTop && y < 400) || (!p.isTop && y > 400))) {
+                to = i;
+                break;
+            }
+        }
+    }
+
+    if (to !== null) {
+        const die = s.movesLeft.find(d => {
+            if (to === 'off') {
+                const dist = s.turn === 'white' ? (from as number) + 1 : 24 - (from as number);
+                return d >= dist;
+            }
+            const target = from === 'bar' 
+                ? (s.turn === 'red' ? d - 1 : 24 - d)
+                : (s.turn === 'red' ? (from as number) + d : (from as number) - d);
+            return target === to;
+        });
+
+        if (die && isValidMove(s.turn, from, to)) executeMove(from, to, die);
+    }
+    selectedPointRef.current = null;
+    setSelectedPointUI(null);
+  };
+
+  const isValidMove = (p: string, from: number | 'bar', to: number | 'off') => {
+      const s = stateRef.current;
+      if (to === 'off') return canBearOff(p as any);
+      if (from !== 'bar' && s.bar[p] > 0) return false;
+      const dest = s.points[to];
+      return dest.checkers.length <= 1 || dest.checkers[0] === p;
+  };
 
   const rollDice = () => {
     playSound('dice');
     const d1 = Math.floor(Math.random() * 6) + 1;
     const d2 = Math.floor(Math.random() * 6) + 1;
-    setState(s => ({
-      ...s, 
-      dice: [d1, d2], 
-      movesLeft: d1 === d2 ? [d1, d1, d1, d1] : [d1, d2]
-    }));
+    const rolls = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+    setState(s => ({ ...s, dice: [d1, d2], movesLeft: rolls }));
   };
 
-  const handleInteraction = (x: number, y: number) => {
-    // Detectar barra central
-    if (Math.abs(x - CANVAS_WIDTH/2) < 40) {
-      if (state.bar[state.turn] > 0) setSelectedPoint('bar');
-      return;
-    }
-
-    // Detectar puntos
-    let clickedPoint = -1;
-    for (let i = 0; i < 24; i++) {
-      const p = getPointCoords(i);
-      if (Math.abs(x - p.x) < 45 && ((p.isTop && y < 400) || (!p.isTop && y > 400))) {
-        clickedPoint = i;
-        break;
-      }
-    }
-
-    if (clickedPoint !== -1) {
-      if (selectedPoint !== null) {
-        // Intentar mover
-        const die = state.movesLeft.find(d => {
-          const target = selectedPoint === 'bar' 
-            ? (state.turn === 'red' ? d - 1 : 24 - d)
-            : (state.turn === 'red' ? selectedPoint + d : selectedPoint - d);
-          return target === clickedPoint;
-        });
-
-        if (die) {
-          executeMove(selectedPoint, clickedPoint, die);
-        } else if (state.points[clickedPoint].checkers.includes(state.turn)) {
-          setSelectedPoint(clickedPoint);
-        }
-      } else if (state.points[clickedPoint].checkers.includes(state.turn)) {
-        setSelectedPoint(clickedPoint);
-      }
-    }
-  };
-
-  const executeMove = (from: number | 'bar', to: number, die: number, isAI = false) => {
+  const executeMove = (from: number | 'bar', to: number | 'off', die: number) => {
     playSound('clack');
     setState(prev => {
       const ns = JSON.parse(JSON.stringify(prev));
       const p = ns.turn;
-      
-      if (from === 'bar') ns.bar[p]--;
-      else ns.points[from].checkers.pop();
-
-      const dest = ns.points[to];
-      if (dest.checkers.length === 1 && dest.checkers[0] !== p) {
-        ns.bar[dest.checkers[0]]++;
-        dest.checkers = [p];
-      } else {
-        dest.checkers.push(p);
+      if (from === 'bar') ns.bar[p]--; else ns.points[from].checkers.pop();
+      if (to === 'off') ns.off[p]++;
+      else {
+          const dest = ns.points[to];
+          if (dest.checkers.length === 1 && dest.checkers[0] !== p) { ns.bar[dest.checkers[0]]++; dest.checkers = [p]; }
+          else dest.checkers.push(p);
       }
-
       ns.movesLeft.splice(ns.movesLeft.indexOf(die), 1);
-      if (ns.movesLeft.length === 0) {
-        ns.turn = ns.turn === 'white' ? 'red' : 'white';
-        ns.dice = [];
-      }
+      if (ns.movesLeft.length === 0) { ns.turn = ns.turn === 'white' ? 'red' : 'white'; ns.dice = []; }
+      if (ns.off.white === 15) ns.winner = 'white'; if (ns.off.red === 15) ns.winner = 'red';
       return ns;
     });
-    if (!isAI) setSelectedPoint(null);
+  };
+
+  const canBearOff = (player: 'white' | 'red') => {
+      const s = stateRef.current;
+      const homePoints = player === 'white' ? [0,1,2,3,4,5] : [18,19,20,21,22,23];
+      return s.points.every((p, i) => homePoints.includes(i) || !p.checkers.includes(player)) && s.bar[player] === 0;
   };
 
   return (
     <div className="w-full h-full relative bg-black overflow-hidden select-none">
       <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover transform scaleX(-1)" style={{ opacity: camOpacity }} />
+      
+      {/* Canvas con interacción táctil y de ratón */}
       <canvas 
         ref={canvasRef} 
         width={CANVAS_WIDTH} 
         height={CANVAS_HEIGHT} 
-        onClick={(e) => {
-          const rect = canvasRef.current!.getBoundingClientRect();
-          const x = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
-          const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
-          handleInteraction(x, y);
-        }} 
-        className="absolute inset-0 w-full h-full z-10 cursor-pointer" 
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        className="absolute inset-0 w-full h-full z-10 cursor-crosshair touch-none" 
       />
       
-      {/* CAPA UI */}
       <div className="absolute inset-0 z-20 pointer-events-none">
-        
-        {/* HEADER */}
         {view === 'PLAYING' && (
           <header className="h-24 flex items-center justify-between px-10 pointer-events-auto">
-            <button onClick={() => setIsMenuOpen(true)} className="w-14 h-14 flex flex-col justify-center items-center gap-1.5 active:scale-90 transition-all bg-black/20 rounded-full">
-              <div className="w-8 h-1 bg-white rounded-full"></div>
-              <div className="w-8 h-1 bg-white rounded-full"></div>
-              <div className="w-8 h-1 bg-white rounded-full"></div>
-            </button>
-            
-            <div className={`px-12 py-3 rounded-full font-black text-xs uppercase tracking-[0.2em] transition-all duration-300 ${state.turn === state.userColor ? 'bg-amber-500 text-black border-2 border-amber-300 shadow-[0_0_30px_rgba(251,191,36,0.5)]' : 'bg-white/10 text-white/40 border border-white/5'}`}>
-              {state.turn === state.userColor ? 'TU TURNO' : 'TURNO RIVAL'}
-            </div>
-
             <button 
-              onClick={rollDice}
-              disabled={state.movesLeft.length > 0 || (state.gameMode === 'AI' && state.turn === 'red')}
-              className="px-12 py-3 bg-white text-black font-black rounded-full text-xs uppercase shadow-2xl disabled:opacity-20 active:scale-95 transition-all pointer-events-auto"
+              onClick={(e) => { e.stopPropagation(); setIsMenuOpen(!isMenuOpen); }} 
+              className="w-16 h-16 glass-panel flex flex-col justify-center items-center gap-2 rounded-full active:scale-90 transition-all z-[100] cursor-pointer"
+              style={{ pointerEvents: 'auto' }}
             >
-              LANZAR
+              <div className="w-8 h-1 bg-white rounded-full"></div>
+              <div className="w-8 h-1 bg-white rounded-full"></div>
+              <div className="w-8 h-1 bg-white rounded-full"></div>
             </button>
+            <div className={`px-12 py-3 rounded-full font-black text-sm transition-all ${state.turn === myColor ? 'bg-amber-500 text-black shadow-[0_0_30px_rgba(251,191,36,0.6)]' : 'bg-white/10 text-white/40'}`}>
+              {state.turn === 'white' ? 'TU TURNO (BLANCO)' : 'TURNO RIVAL (ROJO)'}
+            </div>
+            <button onClick={rollDice} disabled={state.movesLeft.length > 0} className="px-12 py-3 bg-white text-black font-black rounded-full text-xs uppercase disabled:opacity-20 active:scale-95 transition-all pointer-events-auto">LANZAR</button>
           </header>
         )}
 
-        {/* MENU LATERAL OPCIONES */}
-        <div className={`side-menu absolute left-0 top-0 bottom-0 w-[350px] bg-zinc-950/95 border-r border-white/10 p-10 transform transition-transform duration-500 ease-in-out pointer-events-auto shadow-[20px_0_60px_rgba(0,0,0,0.8)] ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-          <div className="flex justify-between items-center mb-16">
-            <h2 className="text-4xl font-black italic tracking-tighter text-white">OPCIONES</h2>
-            <button onClick={() => setIsMenuOpen(false)} className="w-12 h-12 bg-red-600 hover:bg-red-500 rounded-2xl flex items-center justify-center font-bold text-xl text-white transition-colors">✕</button>
+        <div className={`side-menu absolute left-0 top-0 bottom-0 w-[380px] glass-panel p-10 transform transition-transform duration-500 ease-in-out pointer-events-auto z-40 ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+          <div className="flex justify-between items-center mb-16 mt-20">
+            <h2 className="text-4xl font-black italic text-white tracking-tighter">OPCIONES</h2>
           </div>
-          
-          <div className="space-y-12 flex-1">
+          <div className="space-y-12">
             <div className="space-y-6">
-              <div className="flex justify-between items-end">
-                <span className="text-[10px] font-black uppercase text-white/40 tracking-widest">Opacidad Tablero</span>
-                <span className="text-sm font-black text-amber-500">{Math.round(boardOpacity*100)}%</span>
+              <span className="text-[10px] font-black uppercase text-white/40 tracking-widest">Ajustes AR</span>
+              <div className="space-y-8">
+                <div>
+                  <label className="text-xs text-white/60 mb-2 block font-bold">Opacidad Tablero</label>
+                  <input type="range" min="0" max="1" step="0.05" value={boardOpacity} onChange={e => setBoardOpacity(parseFloat(e.target.value))} className="w-full" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/60 mb-2 block font-bold">Opacidad Cámara</label>
+                  <input type="range" min="0" max="1" step="0.05" value={camOpacity} onChange={e => setCamOpacity(parseFloat(e.target.value))} className="w-full" />
+                </div>
               </div>
-              <input type="range" min="0" max="1" step="0.05" value={boardOpacity} onChange={e => setBoardOpacity(parseFloat(e.target.value))} className="w-full" />
             </div>
-
-            <div className="space-y-6">
-              <div className="flex justify-between items-end">
-                <span className="text-[10px] font-black uppercase text-white/40 tracking-widest">Opacidad Cámara</span>
-                <span className="text-sm font-black text-amber-500">{Math.round(camOpacity*100)}%</span>
-              </div>
-              <input type="range" min="0" max="1" step="0.05" value={camOpacity} onChange={e => setCamOpacity(parseFloat(e.target.value))} className="w-full" />
-            </div>
-
             <button 
-              onClick={() => setIsRotated(!isRotated)}
-              className="w-full py-5 rounded-2xl border border-white/10 bg-white/5 font-black uppercase text-xs text-white/80 hover:bg-white/10 transition-all flex items-center justify-center gap-3"
+              onClick={() => { setView('HOME'); setState(getInitialState()); setIsMenuOpen(false); }} 
+              className="w-full py-6 rounded-2xl bg-red-600/20 border border-red-600/40 font-black uppercase text-xs text-red-500 hover:bg-red-600/30 transition-all"
             >
-              <svg className={`w-5 h-5 transition-transform duration-500 ${isRotated ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              Rotar Tablero (180°)
-            </button>
-
-            <button 
-              onClick={() => { setState(getInitialState()); setIsMenuOpen(false); playSound('dice'); }} 
-              className="w-full py-5 rounded-2xl bg-amber-500/10 border border-amber-500/30 font-black uppercase text-xs text-amber-500 hover:bg-amber-500/20 transition-all"
-            >
-              Reiniciar Partida
+              Abandonar Partida
             </button>
           </div>
-          
-          <button onClick={() => window.location.reload()} className="mt-auto w-full py-5 rounded-2xl border border-white/10 font-black uppercase text-xs text-white/30 hover:text-white/60 transition-all">Salir al Menú Principal</button>
         </div>
 
-        {/* HOME MENU */}
+        {view === 'LOBBY' && (
+           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/95 z-50 p-6 pointer-events-auto">
+             <div className="glass-panel p-12 rounded-[40px] text-center max-w-lg w-full border-amber-500/20 shadow-2xl">
+                <h2 className="text-4xl font-black mb-4 text-white italic tracking-tighter uppercase">SALA ONLINE</h2>
+                <div className="bg-white/5 p-10 rounded-3xl border border-white/10 mb-10 group hover:border-amber-500/50 transition-all">
+                    <span className="text-7xl font-black text-amber-500 tracking-tighter select-all">B7X2Y9</span>
+                </div>
+                <button onClick={() => { setIsCopied(true); setTimeout(() => setIsCopied(false), 2000); }} 
+                        className={`w-full py-7 font-black rounded-2xl uppercase transition-all duration-300 transform shadow-xl ${isCopied ? 'bg-green-500 text-white scale-105' : 'bg-amber-500 text-black hover:scale-[1.02]'}`}>
+                    {isCopied ? '¡COPIADO! ✓' : 'COPIAR ID DE SALA'}
+                </button>
+                <button onClick={() => { setView('PLAYING'); setIsMenuOpen(false); }} className="mt-8 text-white/40 uppercase text-xs font-bold hover:text-white transition-colors tracking-widest">IGNORAR Y EMPEZAR</button>
+             </div>
+           </div>
+        )}
+
         {view === 'HOME' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center space-y-8 bg-black z-50 p-6 pointer-events-auto">
-            <div className="relative mb-20">
-               <h1 className="text-[120px] font-black italic tracking-tighter uppercase leading-[0.8] text-white">B-GAMMON AR</h1>
-               <div className="absolute -bottom-4 right-0 px-4 py-1 bg-amber-500 text-black font-black text-xs skew-x-[-15deg]">PREMIUM EDITION</div>
-            </div>
-            
-            <button onClick={() => { setState(s => ({...s, gameMode: 'AI'})); setView('PLAYING'); }} className="w-[480px] py-10 bg-white text-black font-black rounded-3xl uppercase text-2xl shadow-[0_20px_50px_rgba(255,255,255,0.2)] active:scale-95 transition-all hover:scale-[1.02]">VS MÁQUINA</button>
-            <button onClick={() => { /* Proximamente P2P */ }} className="w-[480px] py-10 bg-zinc-800 text-white font-black rounded-3xl uppercase text-2xl active:scale-95 transition-all opacity-50 cursor-not-allowed">MULTIJUGADOR ONLINE</button>
-            <button onClick={() => { setState(getInitialState()); setView('PLAYING'); }} className="w-[480px] py-8 bg-zinc-900 text-white/40 font-black rounded-3xl uppercase text-sm active:scale-95 transition-all hover:text-white/80">LOCAL (2 JUGADORES)</button>
+          <div className="absolute inset-0 flex flex-col items-center justify-center space-y-8 bg-black z-[60] p-6 pointer-events-auto">
+            <h1 className="text-[110px] font-black italic tracking-tighter uppercase text-white leading-none mb-10 drop-shadow-[0_0_50px_rgba(255,255,255,0.2)] text-center">B-GAMMON AR</h1>
+            <button onClick={() => { setView('PLAYING'); setState(s => ({...s, gameMode: 'CPU'})); setIsMenuOpen(false); }} className="w-[520px] max-w-full py-9 bg-white text-black font-black rounded-3xl uppercase text-2xl shadow-2xl active:scale-95 hover:bg-amber-500 transition-all">VS COMPUTADORA</button>
+            <button onClick={() => { setView('PLAYING'); setState(s => ({...s, gameMode: 'LOCAL'})); setIsMenuOpen(false); }} className="w-[520px] max-w-full py-9 bg-zinc-900 border border-white/10 text-white font-black rounded-3xl uppercase text-2xl active:scale-95 hover:border-white/40 transition-all">LOCAL (2 JUG)</button>
+            <button onClick={() => setView('LOBBY')} className="w-[520px] max-w-full py-5 text-white/30 font-bold uppercase text-xs hover:text-amber-500 transition-colors tracking-[0.2em]">MULTIJUGADOR ONLINE</button>
           </div>
+        )}
+
+        {state.winner && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/95 z-[100] pointer-events-auto">
+                <h2 className="text-[80px] md:text-[120px] font-black italic text-white mb-8 uppercase tracking-tighter animate-bounce">¡GANÓ {state.winner === 'white' ? 'BLANCO' : 'ROJO'}!</h2>
+                <button onClick={() => window.location.reload()} className="px-16 py-8 bg-amber-500 text-black font-black rounded-3xl uppercase text-2xl shadow-[0_0_50px_rgba(251,191,36,0.4)]">VOLVER AL INICIO</button>
+            </div>
         )}
       </div>
     </div>
