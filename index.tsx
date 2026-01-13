@@ -6,7 +6,7 @@ import ReactDOM from 'react-dom/client';
 const CANVAS_WIDTH = 1300;
 const CANVAS_HEIGHT = 800;
 const PINCH_THRESHOLD = 0.045; 
-const SMOOTHING_FACTOR = 0.4; // Factor de suavizado para evitar vibraciones (Jitter)
+const SMOOTHING_FACTOR = 0.35; // Suavizado equilibrado para respuesta inmediata
 
 const THEME = {
   pointLight: '#A88B66',
@@ -75,6 +75,7 @@ const App = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const wasPinchingRef = useRef(false);
   const cpuProcessingRef = useRef(false);
+  const mouseActiveRef = useRef(false);
   
   const smoothedPosRef = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
 
@@ -261,16 +262,18 @@ const App = () => {
       locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
-    // CONFIGURACIÓN DE ALTO NIVEL (GOOGLE AI EDGE)
     hands.setOptions({ 
       maxNumHands: 1, 
       modelComplexity: 1, 
-      minDetectionConfidence: 0.75, 
-      minTrackingConfidence: 0.75,
-      selfieMode: true // EL MODO SELFIE HACE QUE LA COORDENADA X COINCIDA CON EL ESPEJO
+      minDetectionConfidence: 0.7, 
+      minTrackingConfidence: 0.7,
+      selfieMode: false // Lo gestionamos manualmente para evitar conflictos con el CSS scaleX(-1)
     });
 
     hands.onResults((results: any) => {
+      // Si el ratón está activo, ignoramos la cámara por un momento para evitar saltos
+      if (mouseActiveRef.current) return;
+
       if (results.multiHandLandmarks?.length > 0) {
         const marks = results.multiHandLandmarks[0];
         const tip = marks[8]; const thumb = marks[4];
@@ -278,11 +281,10 @@ const App = () => {
         const dist = Math.sqrt(Math.pow(tip.x - thumb.x, 2) + Math.pow(tip.y - thumb.y, 2));
         const isPinching = dist < PINCH_THRESHOLD;
 
-        // COORDINACIÓN CORRECTA CON SELFIE MODE ACTIVADO
-        const targetX = tip.x * CANVAS_WIDTH; 
+        // CORRECCIÓN ESPEJO: Invertimos tip.x manualmente para sincronizar con el video scaleX(-1)
+        const targetX = (1 - tip.x) * CANVAS_WIDTH; 
         const targetY = tip.y * CANVAS_HEIGHT;
         
-        // FILTRO EMA PARA ESTABILIDAD
         smoothedPosRef.current.x = smoothedPosRef.current.x * (1 - SMOOTHING_FACTOR) + targetX * SMOOTHING_FACTOR;
         smoothedPosRef.current.y = smoothedPosRef.current.y * (1 - SMOOTHING_FACTOR) + targetY * SMOOTHING_FACTOR;
 
@@ -299,7 +301,6 @@ const App = () => {
         }
         wasPinchingRef.current = isPinching;
       } else {
-        // Solo quitamos el handPos si la fuente era 'hand', para no romper el ratón
         setHandPos(prev => prev?.source === 'hand' ? null : prev);
         wasPinchingRef.current = false;
       }
@@ -317,6 +318,7 @@ const App = () => {
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (!canvasRef.current) return;
+    mouseActiveRef.current = true;
     const rect = canvasRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
     const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
@@ -325,12 +327,11 @@ const App = () => {
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-      if (handPos?.source === 'mouse') {
-          const rect = canvasRef.current!.getBoundingClientRect();
-          const x = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
-          const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
-          setHandPos({ x, y, isPinching: true, source: 'mouse' });
-      }
+    if (!mouseActiveRef.current || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+    const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+    setHandPos({ x, y, isPinching: true, source: 'mouse' });
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -340,13 +341,14 @@ const App = () => {
     const y = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
     handlePinchEnd(x, y);
     setHandPos(null);
+    // Pequeño retardo para volver al modo cámara tras soltar el ratón
+    setTimeout(() => { mouseActiveRef.current = false; }, 200);
   };
 
   const handlePinchStart = (x: number, y: number) => {
     const s = stateRef.current;
     if (s.turn !== myColor && s.gameMode !== 'LOCAL') return;
     
-    // Lanzar dados si se toca la zona central
     if (x > 500 && x < 800 && y > 300 && y < 500) {
         if (s.movesLeft.length === 0) rollDice();
         return;
@@ -482,7 +484,7 @@ const App = () => {
         {view === 'PLAYING' && cameraStatus === 'requesting' && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-[90]">
                 <div className="w-16 h-16 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-6"></div>
-                <p className="text-white font-black uppercase tracking-[0.3em] text-xs">Sincronizando AR...</p>
+                <p className="text-white font-black uppercase tracking-[0.3em] text-xs">Alineando Sensores AR...</p>
             </div>
         )}
 
