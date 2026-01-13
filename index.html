@@ -11,16 +11,20 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,700;0,900;1,900&display=swap" rel="stylesheet">
     
+    <!-- Mediapipe para Hand Tracking -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
     <style>
         body, html, #root { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
-        /* Reset para sliders */
-        input[type="range"] { appearance: none; background: rgba(255,255,255,0.1); border-radius: 10px; }
-        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; background: #fbbf24; border-radius: 50%; cursor: pointer; }
+        input[type="range"] { appearance: none; background: rgba(255,255,255,0.1); border-radius: 10px; height: 4px; }
+        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; background: #fbbf24; border-radius: 50%; cursor: pointer; border: 2px solid white; }
     </style>
 <script type="importmap">
 {
   "imports": {
     "react": "https://esm.sh/react@^19.2.3",
+    "react-dom": "https://esm.sh/react-dom@^19.2.3",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
     "react/": "https://esm.sh/react@^19.2.3/"
   }
