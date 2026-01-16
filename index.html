@@ -1,52 +1,510 @@
-
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>B-GAMMON AR ULTIMATE</title>
-    
+    <meta name="theme-color" content="#0a0a0a">
+    <title>Backgammon AR Pro | Juego Online con Realidad Aumentada</title>
+    <meta name="description"
+        content="El backgammon más avanzado con controles por gestos AR y multijugador P2P. ¡Juega sin registros, directo en tu navegador!">
+
+    <!-- Preload critical resources -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap"
+        as="style">
+
+    <!-- Favicon -->
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
+
+    <!-- Service Worker Cleanup -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(regs => {
+                for (let reg of regs) reg.unregister();
+            }).catch(() => { });
+        }
+    </script>
+
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,700;0,900;1,900&display=swap" rel="stylesheet">
-    
-    <!-- Mediapipe para Hand Tracking -->
+
+    <!-- Core Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 
     <style>
-        body, html, #root { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Inter', sans-serif; }
-        input[type="range"] { appearance: none; background: rgba(255,255,255,0.1); border-radius: 10px; height: 4px; }
-        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; background: #fbbf24; border-radius: 50%; cursor: pointer; border: 2px solid white; }
-        
-        .glass-panel {
-            background: rgba(0, 0, 0, 0.7);
-            backdrop-filter: blur(15px);
+        /* Custom properties */
+        :root {
+            --primary: #fbbf24;
+            --primary-dark: #f59e0b;
+            --bg-dark: #0a0a0a;
+            --glass: rgba(255, 255, 255, 0.05);
+        }
+
+        /* Base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(rgba(10, 10, 10, 0.7), rgba(10, 10, 10, 0.7)), url('/assets/background.jpg');
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            background-repeat: no-repeat;
+            color: #fff;
+            overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            min-height: 100vh;
+            touch-action: manipulation;
+        }
+
+        /* Gradient animations */
+        @keyframes gradientShift {
+
+            0%,
+            100% {
+                background-position: 0% 50%;
+            }
+
+            50% {
+                background-position: 100% 50%;
+            }
+        }
+
+        .animated-gradient {
+            background: linear-gradient(135deg, #0a0a0a, #1a1a2e, #16213e);
+            background-size: 400% 400%;
+            animation: gradientShift 15s ease infinite;
+        }
+
+        /* Glassmorphism */
+        .glass {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
-        
-        @keyframes pulse-gold {
-            0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4); }
-            70% { box-shadow: 0 0 0 15px rgba(251, 191, 36, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+
+        /* Buttons */
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        .hand-cursor { animation: pulse-gold 2s infinite; }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(251, 191, 36, 0.3);
+        }
+
+        /* Animations */
+        @keyframes float {
+
+            0%,
+            100% {
+                transform: translateY(0px);
+            }
+
+            50% {
+                transform: translateY(-20px);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse-glow {
+
+            0%,
+            100% {
+                box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4);
+            }
+
+            50% {
+                box-shadow: 0 0 20px 10px rgba(251, 191, 36, 0);
+            }
+        }
+
+        /* Confetti animation for the game */
+        @keyframes confetti-fall {
+            0% {
+                transform: translateY(-10vh) rotate(0deg);
+                opacity: 1;
+            }
+
+            100% {
+                transform: translateY(110vh) rotate(720deg);
+                opacity: 0;
+            }
+        }
+
+        .confetti {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            top: -10px;
+            z-index: 150;
+            animation: confetti-fall 4s linear infinite;
+        }
+
+        .animate-fadeInUp {
+            animation: fadeInUp 0.8s ease-out forwards;
+        }
+
+        .animate-float {
+            animation: float 6s ease-in-out infinite;
+        }
+
+        .pulse-glow {
+            animation: pulse-glow 2s infinite;
+        }
+
+        /* Hero dice effect */
+        .dice-shadow {
+            filter: drop-shadow(0 0 20px rgba(251, 191, 36, 0.5));
+        }
+
+        /* Safe areas for iOS */
+        .safe-top {
+            padding-top: env(safe-area-inset-top);
+        }
+
+        .safe-bottom {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        .safe-left {
+            padding-left: env(safe-area-inset-left);
+        }
+
+        .safe-right {
+            padding-right: env(safe-area-inset-right);
+        }
+
+        /* Mobile optimizations */
+        @media (max-width: 768px) {
+            .hero-title {
+                font-size: 2.5rem;
+                line-height: 1.1;
+            }
+        }
+
+        /* Loading animation */
+        .loader {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Smooth scroll */
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: 80px;
+        }
+
+        /* Navigation blur */
+        nav {
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            background: rgba(10, 10, 10, 0.8);
+        }
+
+        /* Root integration fixes */
+        #root {
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none !important;
+        }
+
+        /* Hide nav and maximize game in landscape on mobile */
+        @media (max-width: 1180px) and (orientation: landscape) {
+            nav {
+                display: none !important;
+            }
+
+            #game {
+                padding: 0 !important;
+                margin: 0 !important;
+            }
+
+            #game .container {
+                max-width: none !important;
+                padding: 0 !important;
+            }
+
+            #game .glass {
+                padding: 0 !important;
+                border: none !important;
+                border-radius: 0 !important;
+            }
+
+            #app-container {
+                height: 100vh !important;
+                border: none !important;
+                border-radius: 0 !important;
+            }
+
+            section {
+                padding-top: 2rem !important;
+            }
+        }
     </style>
-<script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom": "https://esm.sh/react-dom@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.7"
-  }
-}
-</script>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@19.0.0",
+            "react-dom": "https://esm.sh/react-dom@19.0.0",
+            "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
+            "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+            "react/": "https://esm.sh/react@^19.2.3/"
+        }
+    }
+    </script>
 </head>
-<body>
-    <div id="root"></div>
-    <script type="module" src="index.tsx"></script>
+
+<body class="">
+
+    <!-- Navigation -->
+    <nav class="fixed top-0 w-full z-50 safe-top">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <span class="text-3xl dice-shadow">🎲</span>
+                    <span
+                        class="text-xl font-bold bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent">
+                        Backgammon AR Pro
+                    </span>
+                </div>
+
+                <div class="hidden md:flex items-center space-x-8">
+                    <a href="#features"
+                        class="text-gray-300 hover:text-yellow-400 transition-colors">Características</a>
+                    <a href="#howto" class="text-gray-300 hover:text-yellow-400 transition-colors">Cómo Jugar</a>
+                    <a href="#game" class="text-gray-300 hover:text-yellow-400 transition-colors">Jugar Ahora</a>
+                </div>
+
+                <button id="mobile-menu-btn" class="md:hidden p-2">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 6h16M4 12h16M4 18h16"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <div id="mobile-menu" class="hidden md:hidden bg-black/95 backdrop-blur-lg">
+            <div class="container mx-auto px-4 py-6 space-y-4">
+                <a href="#features"
+                    class="block text-gray-300 hover:text-yellow-400 transition-colors">Características</a>
+                <a href="#howto" class="block text-gray-300 hover:text-yellow-400 transition-colors">Cómo Jugar</a>
+                <a href="#game" class="block text-gray-300 hover:text-yellow-400 transition-colors">Jugar Ahora</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="min-h-screen flex items-center justify-center px-4 pt-20 pb-10 safe-top">
+        <div class="container mx-auto max-w-6xl">
+            <div class="grid md:grid-cols-2 gap-12 items-center">
+                <div class="text-center md:text-left space-y-6 animate-fadeInUp">
+                    <h1 class="hero-title text-5xl md:text-6xl lg:text-7xl font-black leading-tight">
+                        <span
+                            class="bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 bg-clip-text text-transparent">
+                            Backgammon
+                        </span>
+                        <br>
+                        <span class="text-white">Reinventado</span>
+                    </h1>
+                    <p class="text-xl md:text-2xl text-gray-300 max-w-lg mx-auto md:mx-0">
+                        Controla las fichas con gestos de tu mano en tiempo real. Juega multijugador sin registros.
+                    </p>
+                    <div class="flex flex-col sm:flex-row gap-4 justify-center md:justify-start">
+                        <a href="#game"
+                            class="btn-primary px-8 py-4 rounded-full text-black font-bold text-lg inline-flex items-center justify-center space-x-3 pulse-glow">
+                            <span>🎮</span>
+                            <span>Jugar Ahora</span>
+                        </a>
+                        <a href="#features"
+                            class="px-8 py-4 rounded-full border-2 border-gray-600 hover:border-yellow-400 transition-all text-white font-semibold">
+                            Ver Características
+                        </a>
+                    </div>
+                </div>
+                <div class="relative animate-float hidden md:block text-center">
+                    <span class="text-[200px] dice-shadow">🎲</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="py-24 px-4 relative overflow-hidden">
+        <div class="container mx-auto max-w-6xl">
+            <div class="text-center mb-16 animate-fadeInUp">
+                <h2 class="text-4xl md:text-5xl font-black mb-4">
+                    <span
+                        class="bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent underline decoration-orange-500/30">
+                        Tecnología de Vanguardia
+                    </span>
+                </h2>
+                <p class="text-xl text-gray-400">Descubre por qué nuestro backgammon es único en el mundo</p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Gestures -->
+                <div class="glass p-8 rounded-[2.5rem] hover:scale-105 transition-all duration-500 group">
+                    <div
+                        class="w-16 h-16 bg-yellow-500/20 rounded-2xl flex items-center justify-center text-3xl mb-6 group-hover:bg-yellow-500/40 transition-colors">
+                        ✋
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">Control por Gestos AR</h3>
+                    <p class="text-gray-400 leading-relaxed">
+                        Usa MediaPipe para mover fichas con tus manos. La cámara detecta tus gestos en tiempo real.
+                        Soporte
+                        multi-touch avanzado.
+                    </p>
+                </div>
+
+                <!-- P2P -->
+                <div class="glass p-8 rounded-[2.5rem] hover:scale-105 transition-all duration-500 group">
+                    <div
+                        class="w-16 h-16 bg-purple-500/20 rounded-2xl flex items-center justify-center text-3xl mb-6 group-hover:bg-purple-500/40 transition-colors">
+                        🌐
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">Multijugador P2P</h3>
+                    <p class="text-gray-400 leading-relaxed">
+                        Supabase permite jugar sin latencia. Conexión directa, alta velocidad y total privacidad. Sin
+                        registros.
+                    </p>
+                </div>
+
+                <!-- PWA -->
+                <div class="glass p-8 rounded-[2.5rem] hover:scale-105 transition-all duration-500 group">
+                    <div
+                        class="w-16 h-16 bg-green-500/20 rounded-2xl flex items-center justify-center text-3xl mb-6 group-hover:bg-green-500/40 transition-colors">
+                        📱
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">PWA Nativa</h3>
+                    <p class="text-gray-400 leading-relaxed">
+                        Instalable en iOS, Android y Desktop. Funciona offline con Service Workers. Interfaz adaptativa
+                        a cualquier
+                        pantalla.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How To Section -->
+    <section id="howto" class="py-24 px-4 bg-white/5">
+        <div class="container mx-auto max-w-6xl">
+            <div class="text-center mb-20">
+                <h2 class="text-4xl md:text-5xl font-black mb-4">Cómo Jugar en 3 Pasos</h2>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-12 text-center">
+                <div class="space-y-6">
+                    <div
+                        class="w-16 h-16 bg-yellow-400 text-black text-2xl font-black rounded-full flex items-center justify-center mx-auto shadow-xl shadow-yellow-400/20">
+                        1</div>
+                    <h3 class="text-2xl font-bold">Permite la Cámara</h3>
+                    <p class="text-gray-400">MediaPipe necesita acceso para detectar tus gestos. Los datos se procesan
+                        localmente.
+                    </p>
+                </div>
+
+                <div class="space-y-6">
+                    <div
+                        class="w-16 h-16 bg-yellow-400 text-black text-2xl font-black rounded-full flex items-center justify-center mx-auto shadow-xl shadow-yellow-400/20">
+                        2</div>
+                    <h3 class="text-2xl font-bold">Conecta con Amigo</h3>
+                    <p class="text-gray-400">Comparte tu código de sala o introduce el de tu oponente. Conexión
+                        instantánea.</p>
+                </div>
+
+                <div class="space-y-6">
+                    <div
+                        class="w-16 h-16 bg-yellow-400 text-black text-2xl font-black rounded-full flex items-center justify-center mx-auto shadow-xl shadow-yellow-400/20">
+                        3</div>
+                    <h3 class="text-2xl font-bold">Juega con Gestos</h3>
+                    <p class="text-gray-400">Cierra el puño para agarrar, abre para soltar. Desliza para mover fichas.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Game Section -->
+    <section id="game" class="py-24 px-4 relative">
+        <div class="container mx-auto max-w-6xl">
+            <div class="glass rounded-3xl p-4 md:p-8">
+                <!-- App Container -->
+                <div id="app-container"
+                    class="relative w-full h-[80vh] bg-black rounded-2xl overflow-hidden border border-gray-800"
+                    style="touch-action: none;">
+                    <div id="root"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Script to load the React app -->
+    <script type="module" src="./index.tsx"></script>
+
+    <script>
+        // Mobile menu toggle
+        const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+        const mobileMenu = document.getElementById('mobile-menu');
+
+        mobileMenuBtn.addEventListener('click', () => {
+            mobileMenu.classList.toggle('hidden');
+        });
+
+        // Smooth scroll
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    mobileMenu.classList.add('hidden');
+                }
+            });
+        });
+    </script>
 </body>
+
 </html>
