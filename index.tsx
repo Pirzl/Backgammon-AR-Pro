@@ -239,9 +239,24 @@ const App: React.FC = () => {
 
         client.on('connect', () => {
             client.subscribe(topic, (err) => {
-                if (!err && !stateRef.current.isHost) {
-                    const handshakeMsg = JSON.stringify({ type: 'HANDSHAKE', senderId: clientId.current });
-                    client.publish(topic, handshakeMsg);
+                if (err) return;
+
+                if (!stateRef.current.isHost) {
+                    const handshakeInterval = setInterval(() => {
+                        if (clientRef.current?.connected) {
+                            const handshakeMsg = JSON.stringify({ type: 'HANDSHAKE', senderId: clientId.current });
+                            client.publish(topic, handshakeMsg);
+                        } else {
+                            clearInterval(handshakeInterval);
+                        }
+                    }, 3000); // Retry every 3 seconds
+
+                    client.on('message', (receivedTopic, message) => {
+                        const parsed = JSON.parse(message.toString());
+                        if (parsed.type === 'HANDSHAKE_ACK') {
+                            clearInterval(handshakeInterval);
+                        }
+                    });
                 }
             });
         });
@@ -595,6 +610,22 @@ const App: React.FC = () => {
         ctx.beginPath(); ctx.arc(smoothHand.current.x, smoothHand.current.y, rawHand.current.isPinching ? 12 : 24, 0, Math.PI * 2);
         ctx.strokeStyle = rawHand.current.isPinching ? COLORS.gold : 'white'; ctx.lineWidth = 4; ctx.stroke();
       }
+
+      // --- VISUAL FEEDBACK PARA DETECCIÓN DE MANO ---
+      ctx.save();
+      const feedbackX = CANVAS_WIDTH - 150;
+      const feedbackY = CANVAS_HEIGHT - 50;
+      ctx.globalAlpha = 0.8;
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = rawHand.current.isDetected ? '#22c55e' : '#ef4444';
+      ctx.fillText(rawHand.current.isDetected ? 'MANO DETECTADA' : 'NO SE DETECTA LA MANO', feedbackX, feedbackY);
+      ctx.beginPath();
+      ctx.arc(feedbackX + 15, feedbackY - 5, 5, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.restore();
+
+
       anim = requestAnimationFrame(draw);
     };
     anim = requestAnimationFrame(draw); return () => cancelAnimationFrame(anim);
@@ -692,6 +723,16 @@ const App: React.FC = () => {
          onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY)}
          onMouseUp={(e) => handlePointerUp(e.clientX, e.clientY)}
          onTouchStart={(e) => handlePointerDown(e.touches[0].clientX, e.touches[0].clientY)}
+         onTouchMove={(e) => {
+           if (!grabbedRef.current) return;
+           const rect = canvasRef.current?.getBoundingClientRect();
+           if (!rect) return;
+           const scale = Math.min(rect.width / CANVAS_WIDTH, rect.height / CANVAS_HEIGHT);
+           const ox = (rect.width - CANVAS_WIDTH * scale) / 2;
+           const oy = (rect.height - CANVAS_HEIGHT * scale) / 2;
+           mousePos.current.x = (e.touches[0].clientX - rect.left - ox) / scale;
+           mousePos.current.y = (e.touches[0].clientY - rect.top - oy) / scale;
+         }}
          onTouchEnd={(e) => handlePointerUp(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}>
       
       {state.isBlocked && !state.winner && (
