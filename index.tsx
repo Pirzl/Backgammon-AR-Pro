@@ -14,7 +14,11 @@ const THEME = {
   whiteChecker: ['#FFFFFF', '#E0E0E0'],
   redChecker: ['#FF3B30', '#991100'],
   gold: '#fbbf24',
-  success: '#22c55e'
+  success: '#22c55e',
+  pointNumberColor: 'rgba(255, 255, 255, 0.4)',
+  pointNumberFont: 'bold 15px Inter',
+  modalTitleFont: '80px',
+  modalTitleWeight: 'font-black',
 };
 
 const playSound = (type: 'clack' | 'dice' | 'win' | 'grab') => {
@@ -63,6 +67,7 @@ const App = () => {
   const [handPos, setHandPos] = useState<{ x: number, y: number, isPinching: boolean, source: 'hand' | 'mouse' } | null>(null);
   const [myColor] = useState<'white' | 'red'>('white');
   const [isCopied, setIsCopied] = useState(false);
+  const [noMovePossible, setNoMovePossible] = useState(false);
   
   const [cameraStatus, setCameraStatus] = useState<'idle' | 'requesting' | 'ready' | 'error'>('idle');
   const [cameraErrorMsg, setCameraErrorMsg] = useState('');
@@ -70,6 +75,7 @@ const App = () => {
   const stateRef = useRef(state);
   const selectedPointRef = useRef<number | 'bar' | null>(null);
   const [selectedPointUI, setSelectedPointUI] = useState<number | 'bar' | null>(null);
+  const [potentialMoves, setPotentialMoves] = useState<number[]>([]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -137,6 +143,13 @@ const App = () => {
       ctx.moveTo(x - 36, yBase); ctx.lineTo(x + 36, yBase); ctx.lineTo(x, yTip);
       ctx.fill();
 
+      // Add point numbers
+      ctx.font = THEME.pointNumberFont;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = THEME.pointNumberColor;
+      const yPos = isTop ? 40 : 780;
+      ctx.fillText((i + 1).toString(), x, yPos);
+
       state.points[i].checkers.forEach((col, j) => {
         const y = isTop ? 95 + (j * 42) : 705 - (j * 42);
         const isThisSelected = selectedPointUI === i && j === state.points[i].checkers.length - 1;
@@ -189,7 +202,38 @@ const App = () => {
       ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
       ctx.restore();
     }
-  }, [state, selectedPointUI, boardOpacity, handPos]);
+
+    // Highlight potential moves
+    potentialMoves.forEach(move => {
+      const { x, yBase, isTop } = getPointCoords(move);
+      ctx.fillStyle = THEME.success;
+      ctx.beginPath();
+      const y = isTop ? yBase + 20 : yBase - 20;
+      ctx.arc(x, y, 15, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Highlight invalid drop zone
+    if (handPos?.isPinching && selectedPointRef.current !== null) {
+      let isOverValidMove = false;
+      for (const move of potentialMoves) {
+        const p = getPointCoords(move);
+        if (Math.abs(handPos.x - p.x) < 50) {
+          isOverValidMove = true;
+          break;
+        }
+      }
+      if (!isOverValidMove) {
+        ctx.save();
+        ctx.strokeStyle = 'red';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(handPos.x, handPos.y, 30, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }, [state, selectedPointUI, boardOpacity, handPos, potentialMoves]);
 
   useEffect(() => {
     const anim = requestAnimationFrame(render);
@@ -372,9 +416,21 @@ const App = () => {
     }
     selectedPointRef.current = hit;
     setSelectedPointUI(hit);
+
+    if (hit !== null) {
+      const s = stateRef.current;
+      const moves = s.movesLeft.map(die => {
+        if (hit === 'bar') {
+          return s.turn === 'red' ? die - 1 : 24 - die;
+        }
+        return s.turn === 'red' ? hit + die : hit - die;
+      }).filter(target => target >= 0 && target < 24 && isValidMove(s.turn, hit, target));
+      setPotentialMoves(moves);
+    }
   };
 
   const handlePinchEnd = (x: number, y: number) => {
+    setPotentialMoves([]);
     const from = selectedPointRef.current;
     const s = stateRef.current;
     if (from === null) return;
@@ -422,7 +478,28 @@ const App = () => {
     const d1 = Math.floor(Math.random() * 6) + 1;
     const d2 = Math.floor(Math.random() * 6) + 1;
     const rolls = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
-    setState(s => ({ ...s, dice: [d1, d2], movesLeft: rolls }));
+
+    const tempState = { ...stateRef.current, movesLeft: rolls };
+    if (!hasAnyValidMove(tempState)) {
+      setNoMovePossible(true);
+    } else {
+      setState(s => ({ ...s, dice: [d1, d2], movesLeft: rolls }));
+    }
+  };
+
+  const hasAnyValidMove = (s: typeof state) => {
+    const p = s.turn;
+    if (s.bar[p] > 0) {
+      return s.movesLeft.some(die => isValidMove(p, 'bar', p === 'red' ? die - 1 : 24 - die));
+    }
+    for (let i = 0; i < 24; i++) {
+      if (s.points[i].checkers.includes(p)) {
+        if (s.movesLeft.some(die => isValidMove(p, i, p === 'red' ? i + die : i - die))) {
+          return true;
+        }
+      }
+    }
+    return false;
   };
 
   const executeMove = (from: number | 'bar', to: number | 'off', die: number) => {
@@ -552,8 +629,8 @@ const App = () => {
         {view === 'HOME' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center space-y-8 bg-black z-[60] p-6 pointer-events-auto">
             <h1 className="text-[100px] font-black italic tracking-tighter uppercase text-white leading-none mb-10 text-center">B-GAMMON AR</h1>
-            <button onClick={() => { setView('PLAYING'); setState(s => ({...s, gameMode: 'CPU'})); setIsMenuOpen(false); }} className="w-[500px] max-w-full py-9 bg-white text-black font-black rounded-3xl uppercase text-2xl shadow-2xl active:scale-95 hover:bg-amber-500 transition-all">CONTRA CPU</button>
-            <button onClick={() => { setView('PLAYING'); setState(s => ({...s, gameMode: 'LOCAL'})); setIsMenuOpen(false); }} className="w-[500px] max-w-full py-9 bg-zinc-900 border border-white/10 text-white font-black rounded-3xl uppercase text-2xl active:scale-95 hover:border-white/40 transition-all">2 JUGADORES (LOCAL)</button>
+            <button onClick={() => { setState(getInitialState()); setView('PLAYING'); setState(s => ({...s, gameMode: 'CPU'})); setIsMenuOpen(false); }} className="w-[500px] max-w-full py-9 bg-white text-black font-black rounded-3xl uppercase text-2xl shadow-2xl active:scale-95 hover:bg-amber-500 transition-all">CONTRA CPU</button>
+            <button onClick={() => { setState(getInitialState()); setView('PLAYING'); setState(s => ({...s, gameMode: 'LOCAL'})); setIsMenuOpen(false); }} className="w-[500px] max-w-full py-9 bg-zinc-900 border border-white/10 text-white font-black rounded-3xl uppercase text-2xl active:scale-95 hover:border-white/40 transition-all">2 JUGADORES (LOCAL)</button>
             <button onClick={() => setView('LOBBY')} className="w-[500px] max-w-full py-5 text-white/30 font-bold uppercase text-xs hover:text-amber-500 transition-colors tracking-[0.2em]">MULTIJUGADOR ONLINE</button>
           </div>
         )}
@@ -563,6 +640,21 @@ const App = () => {
                 <h2 className="text-[80px] font-black italic text-white mb-8 uppercase tracking-tighter">¡GANÓ {state.winner === 'white' ? 'BLANCO' : 'ROJO'}!</h2>
                 <button onClick={() => window.location.reload()} className="px-16 py-8 bg-amber-500 text-black font-black rounded-3xl uppercase text-2xl">VOLVER AL INICIO</button>
             </div>
+        )}
+
+        {noMovePossible && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/95 z-[100] pointer-events-auto">
+            <h2 className={`text-[${THEME.modalTitleFont}] ${THEME.modalTitleWeight} italic text-white mb-8 uppercase tracking-tighter`}>NO MOVE POSSIBLE</h2>
+            <button
+              onClick={() => {
+                setNoMovePossible(false);
+                setState(s => ({ ...s, turn: s.turn === 'white' ? 'red' : 'white', dice: [], movesLeft: [] }));
+              }}
+              className="px-16 py-8 bg-amber-500 text-black font-black rounded-3xl uppercase text-2xl"
+            >
+              OK
+            </button>
+          </div>
         )}
       </div>
     </div>
