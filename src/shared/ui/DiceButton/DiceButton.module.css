@@ -1,0 +1,85 @@
+.diceBtn {
+  width: 80px;
+  height: 80px;
+  background: transparent;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition: transform .2s;
+  border: none;
+  padding: 0;
+  outline: none;
+  /* Hardware acceleration */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+}
+
+
+
+.diceBtn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: grayscale(0.5);
+}
+
+/* Sizes */
+.sm {
+  width: 48px;
+  height: 48px;
+}
+.sm .diceImg {
+  width: 40px;
+  height: 40px;
+}
+
+.md {
+  width: 64px;
+  height: 64px;
+}
+.md .diceImg {
+  width: 54px;
+  height: 54px;
+}
+
+.lg {
+  width: 80px;
+  height: 80px;
+}
+.lg .diceImg {
+  width: 70px;
+  height: 70px;
+}
+
+.diceImg {
+  width: 70px;
+  height: 70px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.rotar {
+  animation: girar 1.5s ease-out forwards;
+}
+
+@keyframes girar {
+  0% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(540deg) scale(1.15); }
+  100% { transform: rotate(1080deg) scale(1); }
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 768px) {
+  .lg {
+    width: 60px;
+    height: 60px;
+  }
+  .lg .diceImg {
+    width: 50px;
+    height: 50px;
+  }
+}

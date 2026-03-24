@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Bloquear carpetas internas
+Disallow: /admin/
+Disallow: /src/
+
+Sitemap: https://aidoit4u.eu/sitemap.xml

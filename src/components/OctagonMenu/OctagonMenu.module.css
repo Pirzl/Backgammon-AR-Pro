@@ -1,0 +1,186 @@
+.scene {
+  perspective: 1000px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+.carousel {
+  width: var(--panel-width, 300px);
+  height: var(--panel-height, 400px);
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.carouselCell {
+  position: absolute;
+  width: var(--panel-width, 300px);
+  height: var(--panel-height, 400px);
+  left: 0;
+  top: 0;
+  backface-visibility: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  user-select: none;
+}
+
+.contextBox {
+  width: 100%;
+  padding: 1.5rem;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1.5rem;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: all 0.3s ease;
+}
+
+.activeBox {
+  border-color: rgba(212, 175, 55, 0.5);
+  box-shadow: 0 0 40px rgba(212, 175, 55, 0.3);
+}
+
+.menuIcon {
+  margin-bottom: 1.25rem;
+  filter: drop-shadow(0 0 10px currentColor);
+}
+
+.menuTitle {
+  font-family: var(--font-display, inherit);
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: white;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.menuDescription {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.6);
+  text-align: center;
+  margin-bottom: 1.5rem;
+  max-width: 90%;
+}
+
+.accessButton {
+  background: linear-gradient(135deg, #d4af37 0%, #b8860b 100%);
+  color: #1a1a1a;
+  font-weight: 800;
+  padding: 0.8rem 2rem;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+  margin-top: 1.25rem;
+}
+
+.accessButton:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 8px 25px rgba(212, 175, 55, 0.4);
+}
+
+.navButton {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: white;
+  padding: 1rem;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.navButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.prevButton {
+  left: 3vw;
+}
+
+.nextButton {
+  right: 3vw;
+}
+
+.navButton:active {
+  background: rgba(212, 175, 55, 0.3);
+  transform: translateY(-50%) scale(0.9);
+}
+
+@media (max-width: 1024px) {
+  .prevButton {
+    left: 2vw;
+  }
+  .nextButton {
+    right: 2vw;
+  }
+}
+
+@media (max-width: 640px) {
+  .navButton {
+    padding: 0.6rem;
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(8px);
+    width: 44px;
+    height: 44px;
+  }
+  .prevButton {
+    left: 1vw;
+  }
+  .nextButton {
+    right: 1vw;
+  }
+}
+
+/* Compact mode for low-height viewports (< 500px) */
+.compact .contextBox {
+  padding: 1rem !important;
+}
+
+.compact .menuIcon {
+  margin-bottom: 0.5rem !important;
+}
+
+.compact .menuIcon svg {
+  width: 48px !important;
+  height: 48px !important;
+}
+
+.compact .menuTitle {
+  font-size: 1.1rem !important;
+  margin-bottom: 0.25rem !important;
+}
+
+.compact .menuDescription {
+  font-size: 0.75rem !important;
+  margin-bottom: 0.75rem !important;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+.compact .accessButton {
+  padding: 0.5rem 1.5rem !important;
+  font-size: 0.75rem !important;
+  margin-top: 0.75rem !important;
+}

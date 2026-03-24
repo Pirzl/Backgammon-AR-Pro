@@ -1,0 +1,233 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Default (System/White or Dark fallback handled by media query usually, but here we drive by class/attribute) */
+  --bg-color: #ffffff;
+  --text-color: #0f172a; /* slate-900 */
+  --panel-bg: #f8fafc; /* slate-50 */
+
+  /* Shared Colors */
+  --white-player: #ffb347;
+  --white-glow: rgba(255, 179, 71, 0.4);
+  --black-player: #008080;
+  --black-glow: rgba(0, 128, 128, 0.4);
+
+  /* Safe Area Variables */
+  --sat: env(safe-area-inset-top);
+  --sab: env(safe-area-inset-bottom);
+  --sal: env(safe-area-inset-left);
+  --sar: env(safe-area-inset-right);
+}
+
+/* Light Theme (Forced Light - "Red Blood Light") */
+[data-theme="light"] {
+  --bg-color: #fff0f0; /* Light Red tint */
+  --text-color: #450a0a; /* Red-950 */
+  --panel-bg: #fff5f5; /* Red-50 */
+  color-scheme: light;
+}
+
+/* Dark Theme (Forced Dark - "Gray Dark") */
+[data-theme="dark"] {
+  --bg-color: #111111; /* Dark Gray (almost black) */
+  --text-color: #eaeaea;
+  --panel-bg: #1a1a1a;
+  color-scheme: dark;
+}
+
+/* System logic handled by JS verifying preference and setting data-theme="dark" or "light" */
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+  position: relative;
+}
+
+#root {
+  width: 100%;
+  flex: 1 0 auto;
+}
+
+/* Premium Gradient Mesh Background */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: var(--gradient-mesh);
+  opacity: 0.5;
+  z-index: -1;
+  animation: mesh-shift 20s ease-in-out infinite;
+}
+
+@keyframes mesh-shift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(-10px, 10px);
+  }
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: "Outfit", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+/* Enhanced Glassmorphism Utilities */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    0 8px 32px 0 rgba(0, 0, 0, 0.37),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-xl);
+  transform: translateZ(0); /* Hardware acceleration */
+}
+
+.glass-card {
+  background: rgba(25, 25, 25, 0.6); /* Darker for better contrast */
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: translateZ(0);
+}
+
+.glass-card:hover {
+  background: rgba(40, 40, 40, 0.8);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* Premium Glass Variant */
+.glass-premium {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 8px 32px 0 rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-xl);
+}
+
+/* Responsive Bento Grid */
+.bento-grid {
+  display: grid;
+  gap: var(--gap-bento);
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+/* Breakpoint Overrides */
+@media (min-width: 768px) {
+  .bento-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .bento-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Utility Classes */
+.cursor-pointer {
+  cursor: pointer;
+}
+
+.transition-all-300 {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Layered Shadow System */
+.shadow-sm {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.shadow-md {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.shadow-lg {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.shadow-xl {
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.4);
+}
+
+/* Game Elements */
+.checker-shadow {
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.5));
+}
+
+.point-tri {
+  clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+}
+
+.point-tri-inverted {
+  clip-path: polygon(50% 100%, 0% 0%, 100% 0%);
+}
+
+/* Shimmer Effect for Premium Elements */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 1000px 100%;
+  animation: shimmer 3s infinite;
+}
+
+.viewport-lock {
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Avatar Fallback Logic */
+.fallback-icon .fallback-child {
+  display: block !important;
+}
