@@ -1,0 +1,46 @@
+
+> vivo@0.0.0 lint
+> eslint .
+
+
+E:\Proyecto\BACKGAMMON\BACKGAMMON-VIVO\src\features\admin\components\AdminAwardPoints.tsx
+  104:5  error  Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+E:\Proyecto\BACKGAMMON\BACKGAMMON-VIVO\src\features\admin\components\AdminAwardPoints.tsx:104:5
+  102 |   useEffect(() => {
+  103 |     if (!selectedUser) return;
+> 104 |     loadUserData(selectedUser.id);
+      |     ^^^^^^^^^^^^ Avoid calling setState() directly within an effect
+  105 |
+  106 |     const channel = supabase
+  107 |       .channel(`admin-wallet-${selectedUser.id}`)  react-hooks/set-state-in-effect
+
+E:\Proyecto\BACKGAMMON\BACKGAMMON-VIVO\src\features\client\components\UserDashboard.tsx
+  8:10  error  'InvitationInbox' is defined but never used  @typescript-eslint/no-unused-vars
+
+E:\Proyecto\BACKGAMMON\BACKGAMMON-VIVO\src\features\matchmaking\components\InvitationInbox.tsx
+  23:13  error  Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+E:\Proyecto\BACKGAMMON\BACKGAMMON-VIVO\src\features\matchmaking\components\InvitationInbox.tsx:23:13
+  21 |     useEffect(() => {
+  22 |         if (!user) {
+> 23 |             setInvites([]);
+     |             ^^^^^^^^^^ Avoid calling setState() directly within an effect
+  24 |             return;
+  25 |         }
+  26 |  react-hooks/set-state-in-effect
+
+Ô£û 3 problems (3 errors, 0 warnings)
+

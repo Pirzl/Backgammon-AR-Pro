@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover"
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net blob: https://www.googletagmanager.com;
+        worker-src 'self' blob:;
+        style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+        font-src 'self' https://fonts.gstatic.com;
+        img-src 'self' data: blob: https://*.supabase.co https://ui-avatars.com https://*.google-analytics.com https://*.googletagmanager.com https://m.media-amazon.com https://images-na.ssl-images-amazon.com https://images-amazon.com https://*.ssl-images-amazon.com;
+        connect-src 'self' https://*.supabase.co wss://*.supabase.co https://turn.time4vps.cloud https://fonts.googleapis.com https://fonts.gstatic.com https://generativelanguage.googleapis.com https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com https://cdn.jsdelivr.net;
+        object-src 'none';
+        base-uri 'self';
+      "
+    />
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-ZVK9SR5ZKQ"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-ZVK9SR5ZKQ');
+    </script>
+
+    <!-- SEO Meta Tags -->
+    <title>Backgammon VIVO - Juego Premium con Hand-Tracking, IA y CRM</title>
+    <meta
+      name="description"
+      content="Juega al Backgammon online contra humanos o frente a nuestra IA 'Gran Maestro'. Disfruta de registro CRM, apuestas por puntos, ranking global, videollamadas integradas y nuestra innovadora tecnología Hand-Tracking (movimiento por gestos de cámara). ¡Conviértete en el Rey del Backgammon!"
+    />
+    <meta
+      name="keywords"
+      content="backgammon, backgammon online, hand tracking, apuestas por puntos, IA gran maestro, ranking backgammon, videollamada, AR, juego de mesa"
+    />
+    <meta name="author" content="Backgammon VIVO" />
+    <meta name="robots" content="index, follow" />
+
+    <!-- Open Graph (Facebook, LinkedIn, WhatsApp) -->
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:title"
+      content="Backgammon VIVO - El Futuro del Backgammon Online"
+    />
+    <meta
+      property="og:description"
+      content="Desafía a amigos con videollamada o compite contra la IA. Gana puntos, sube en el ranking CRM y juega usando gestos con tu cámara web."
+    />
+    <meta property="og:url" content="https://www.aidoit4u.eu" />
+    <meta property="og:site_name" content="Backgammon VIVO" />
+    <meta property="og:image" content="https://www.aidoit4u.eu/og-image.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Backgammon VIVO - Juega como nunca antes"
+    />
+    <meta
+      name="twitter:description"
+      content="Apuestas por puntos, ranking global, IA avanzada y tecnología Hand-Tracking. ¿Estás listo para ser el Rey del Backgammon?"
+    />
+    <meta name="twitter:image" content="https://www.aidoit4u.eu/og-image.png" />
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+  <body style="display: flex; flex-direction: column; min-height: 100vh; margin: 0;">
+    <main id="root" style="flex: 1 0 auto; position: relative;"></main>
+
+    <!-- Enhanced Legal Footer -->
+    <style>
+      .app-footer {
+        position: relative;
+        z-index: 50; /* Ensures it stays above backgrounds */
+        background: rgba(10, 10, 10, 0.95);
+        backdrop-filter: blur(10px);
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+        padding: 1rem 0;
+        text-align: center;
+        font-family: "Outfit", sans-serif;
+        color: #888;
+        font-size: 0.85rem;
+        width: 100%;
+        margin-top: auto;
+      }
+      .footer-nav {
+        display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        margin-bottom: 0.5rem;
+      }
+      .footer-nav a {
+        color: #b0b0b0;
+        text-decoration: none;
+        transition: color 0.3s ease;
+      }
+      .footer-nav a:hover {
+        color: #ffb347;
+      }
+      .footer-copyright {
+        margin: 0;
+        opacity: 0.6;
+      }
+    </style>
+    <footer class="app-footer">
+      <nav class="footer-nav">
+        <a href="/acerca-de.html">Acerca de</a>
+        <a href="/privacidad.html">Privacidad</a>
+        <a href="/cookies.html">Cookies</a>
+        <a href="/terminos.html">Términos</a>
+        <a href="/contacto.html">Contacto</a>
+        <a href="/sitemap.xml" target="_blank">Sitemap</a>
+      </nav>
+      <p class="footer-copyright">© 2026 AIDoit4U. Todos los derechos reservados.</p>
+    </footer>
+
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

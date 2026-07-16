@@ -13,12 +13,14 @@ import { useAuth } from '../../auth/useAuth';
 import { useHandInteraction } from '../../hand-tracking/lib/useHandInteraction';
 import { MediaPipeProvider } from '../../hand-tracking/lib/MediaPipeProvider';
 import { useBoardDimensions } from '../lib/useBoardDimensions';
+import { useBoardGeometry } from '../lib/useBoardGeometry';
 import { generateBoardSummary } from '../lib/useAICommentary'; // NEW: Spinal Cord AI Context
 import { Board } from './Board';
 import { GameSidebar } from './GameSidebar';
 import { DoublingCubeModal } from './DoublingCubeModal';
 import { PlayerBettingIndicator } from './PlayerBettingIndicator';
 import { BettingStatusBar } from './BettingStatusBar';
+import { sfx, primeAudio } from '../lib/sound';
 import { CubeHistory } from './CubeHistory';
 import { BettingResultModal } from './BettingResultModal';
 import { AiTauntBubble } from './AiTauntBubble';
@@ -26,14 +28,16 @@ import { useWallet } from '../lib/useWallet';
 import { useCubeHistory } from '../lib/useCubeHistory';
 import { CalibrationOverlay } from '../../hand-tracking/ui/CalibrationOverlay';
 import { HandTrackingLayer } from '../../hand-tracking/ui/HandTrackingLayer';
+import { CameraPermissionModal } from '../../hand-tracking/ui/CameraPermissionModal';
 import { GhostHandLayer } from '../../hand-tracking/ui/GhostHandLayer';
+import { FirstRunTutorial, hasSeenTutorial } from '../../game-board/ui/FirstRunTutorial';
+import { KeyboardShortcutsModal } from '../../game-board/ui/KeyboardShortcutsModal';
 import { VideoLayer } from '../../video-call/ui/VideoLayer';
 import { useVideoChat } from '../../networking/lib/useVideoChat'; // NEW
 import { SupabaseSignaling } from '../../networking/lib/SupabaseSignaling';
 import { logTelemetry } from '../../../shared/lib/telemetry';
 import { isFeatureEnabled } from '../../../shared/lib/featureFlags';
 import { applyMove, getAvailableDice, isValidMove } from '../../../entities/game/rules';
-import { startPresenceHeartbeat, stopPresenceHeartbeat } from '../../../shared/api/supabase';
 import { DiceButton } from '../../../shared/ui/DiceButton/DiceButton';
 import { supabase } from '../../../shared/api/supabase'; // NEW: Added import
 
@@ -83,6 +87,9 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   
   // Game Networking & Presence State
   const [isOpponentPresent, setIsOpponentPresent] = useState(false);
+  // Tracks whether game ever started (opponent joined at least once) to distinguish
+  // "waiting for opponent to join" vs "opponent disconnected mid-game".
+  const [hasGameStarted, setHasGameStarted] = useState(false);
   const hasOpponentJoinedOnceRef = useRef(false);
   const abandonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [insufficientFunds, setInsufficientFunds] = useState(false);
@@ -133,15 +140,6 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     signalingChannelRef.current = signalingChannel;
   }, [signalingChannel]);
   
-  // Mark player as online when game loads (heartbeat every 20s), offline on unmount
-  useEffect(() => {
-    startPresenceHeartbeat();
-    
-    return () => {
-      stopPresenceHeartbeat();
-    };
-  }, []);
-  
   const { state, dispatch, isPending } = useGameState();
   const [, startTransition] = useTransition();
   const isVsComputer = initialMode === 'ai';
@@ -153,10 +151,22 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   });
   
   // Delayed Modal State
-  // Delayed Modal State
   const [showConfirmationModal, setShowConfirmationModal] = useState(false);
   const [isFadingOut, setIsFadingOut] = useState(false);
-  
+
+  // AI "Sin movimientos" transient popup (isolated from the human modal)
+  const [showAiNoMoves, setShowAiNoMoves] = useState(false);
+  const [aiNoMovesFading, setAiNoMovesFading] = useState(false);
+  const aiNoMovesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Session game tally — resets to 0 whenever GameBoard mounts (i.e. on
+  // entering /game after leaving to index). NOT persisted; the permanent
+  // record lives in game_logs (CRM/AI learning).
+  const [sessionGamesWon, setSessionGamesWon] = useState(0);
+  const [sessionGamesLost, setSessionGamesLost] = useState(0);
+  // Guards the session tally so each game is counted exactly once.
+  const gameEndCountedRef = useRef(false);
+
   // Doubling Cube Modal State
   const [showDoublingModal, setShowDoublingModal] = useState(false);
 
@@ -167,6 +177,8 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   
   // AI Taunt Bubble State
   const [tauntMessage, setTauntMessage] = useState('');
+  // AI difficulty (1 = básico, 10 = experto). Fed to getGrandmasterMove.
+  const [aiDifficulty, setAiDifficulty] = useState<number>(5);
   const [showTaunt, setShowTaunt] = useState(false);
   const [isHintLoading, setIsHintLoading] = useState(false);
   
@@ -399,6 +411,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
         if (opponentPresent) {
             hasOpponentJoinedOnceRef.current = true;
+            setHasGameStarted(true);
             if (abandonTimerRef.current) {
                 clearTimeout(abandonTimerRef.current);
                 abandonTimerRef.current = null;
@@ -693,6 +706,14 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     return saved === 'true';
   });
 
+  // Camera permission explainer (E / AR-UX): shown BEFORE the camera starts,
+  // so the user explicitly allows it. Never auto-starts the camera.
+  const [cameraPermState, setCameraPermState] = useState<'explain' | 'denied' | null>(null);
+
+  // First-run tutorial (instructions) — shown once per user/browser.
+  const [showTutorial, setShowTutorial] = useState(() => !hasSeenTutorial());
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
   // Sync settings with localStorage and external events
   useEffect(() => {
     const syncSettings = () => {
@@ -731,6 +752,16 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   
   // Board Geometry & Dimensions (Lifted State)
   const { containerRef, dimensions, getPixelCoordinates } = useBoardDimensions(); // Desktop Sidebar State
+  // Measure real DOM point positions so <Board> can place checkers.
+  const { geometry } = useBoardGeometry(containerRef, dimensions);
+
+  // Flying-checker animation: drives the <Board> ghost that slides a moved
+  // checker from its origin to its destination (otherwise moves "jump").
+  const [animatingChecker, setAnimatingChecker] = useState<{
+    fromX: number; fromY: number; toX: number; toY: number;
+    color: 'white' | 'black';
+    toPointId: number;
+  } | null>(null);
   
   // NEW: Root Container Dimensions for Hand Tracking (Full Screen / Layout Aware)
   const { containerRef: rootRef, dimensions: rootDimensions } = useBoardDimensions();
@@ -981,15 +1012,43 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     startTransition(async () => {
       addOptimisticMove(move);
       await dispatch({ type: 'MOVE_CHECKER', move });
-      
+
+      // ANIMATION: fly a ghost checker from origin to destination.
+      // Capture geometry BEFORE the board re-renders at the new positions.
+      const geom = geometry;
+      const fromGeom = geom[move.from];
+      const toGeom = geom[move.to];
+      if (fromGeom && toGeom) {
+        const color: 'white' | 'black' =
+          (stateRef.current.turn === 'white') ? 'white' : 'black';
+
+        const fromX = fromGeom.cx;
+        const fromY = fromGeom.cy;
+        const toX = toGeom.cx;
+        const toY = toGeom.cy;
+
+        setAnimatingChecker({
+          fromX,
+          fromY,
+          toX,
+          toY,
+          color,
+          toPointId: move.to,
+        });
+        window.setTimeout(() => setAnimatingChecker(null), 420);
+      }
+
       // Record move for AI learning
       recordMove(stateRef.current, move);
 
-      // Broadcast Move — use Ref so hand-tracking gesture effect 
+      // Broadcast Move — use Ref so hand-tracking gesture effect
       // always has access to the latest broadcaster without re-registering.
       broadcastGameUpdateRef.current('MOVE_CHECKER', { move });
+
+      // SOUND: checker movement blip
+      sfx.move();
     });
-  }, [addOptimisticMove, dispatch, recordMove]); // state intentionally omitted, reading via Ref for stability
+  }, [addOptimisticMove, dispatch, recordMove, geometry]); // state intentionally omitted, reading via Ref for stability
 
 
   // AI Integration (Replaces useAIWorker)
@@ -1012,7 +1071,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       
       try {
           console.log("🤖 AI Thinking... (Locked)");
-          const aiResponse = await getGrandmasterMove(currentBoard, currentDice, currentState);
+          const aiResponse = await getGrandmasterMove(currentBoard, currentDice, currentState, aiDifficulty);
           
           if (aiResponse && aiResponse.moves && aiResponse.moves.length > 0) {
               console.log("🤖 AI Playing:", aiResponse.moves);
@@ -1045,6 +1104,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                       // Taunt on hit!
                       if (isHit) {
                         triggerTaunt('hit');
+                        sfx.hit();
                       }
                       
                       // Update liveState to reflect the move for next iteration
@@ -1077,16 +1137,15 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                  }).catch(err => console.error("Error en Profesor Mágico:", err));
               }
 
-              // 5. TURN COMPLETION: If some moves were skipped, end AI turn to prevent freeze
-              const allDiceUsed = liveState.usedDice.length >= currentDice.length;
-              if (!allDiceUsed || movesExecuted < aiResponse.moves.length) {
-                  console.warn(`⚠️ AI used ${movesExecuted}/${aiResponse.moves.length} moves. Confirming turn end.`);
-                  await new Promise(resolve => setTimeout(resolve, 500));
-                    startTransition(() => {
-                      dispatch({ type: 'CONFIRM_TURN_END' });
-                      broadcastGameUpdateRef.current('CONFIRM_TURN_END');
-                    });
-              }
+              // 5. TURN COMPLETION: End the AI turn after playing its moves.
+              // Always confirm (whether all dice used or some skipped) so the
+              // turn never gets stuck on the AI.
+              console.log(`🤖 AI finished: ${movesExecuted}/${aiResponse.moves.length} moves executed. Confirming turn end.`);
+              await new Promise(resolve => setTimeout(resolve, 500));
+              startTransition(() => {
+                dispatch({ type: 'CONFIRM_TURN_END' });
+                broadcastGameUpdateRef.current('CONFIRM_TURN_END');
+              });
            } else {
              console.log("🤖 AI decided to skip.");
              // Taunt when AI skips (no valid moves)
@@ -1187,35 +1246,53 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   // BUT the state `isSidebarOpen` needs to be defined at the top.
   // I will use a larger replacement block to include the top + return.
   
-  // Auto-Turn Confirmation Logic
   // Auto-Turn Confirmation Logic (Refined for smooth fade)
   useEffect(() => {
     if (state.needsTurnConfirmation && !isPending && !isThinking) {
         const isBlocked = state.dice.length > state.usedDice.length;
-        
-        // Show modal ONLY if blocked. 
-        // For AI games: Silence the pop-up during AI turns UNLESS they are blocked.
-        const shouldShow = isVsComputer && state.turn === computerPlayer 
-            ? isBlocked 
-            : isBlocked; // In H2H or Human turn, we currently show it if blocked.
-        
-        // Actually, the request is to "Silence them altogether" except for specific cases.
-        // Let's refine: If it's AI turn and NOT blocked, keep it hidden.
-        setShowConfirmationModal(shouldShow);
+
+        // AI blocked → show the isolated "IA: Sin movimientos" popup (not the
+        // generic modal). Human blocked → show the generic modal.
+        if (isVsComputer && state.turn === computerPlayer) {
+            if (isBlocked) {
+                setShowAiNoMoves(true);
+                setAiNoMovesFading(false);
+                if (aiNoMovesTimer.current) clearTimeout(aiNoMovesTimer.current);
+                aiNoMovesTimer.current = setTimeout(() => setAiNoMovesFading(true), 2000);
+                const hideTimer = setTimeout(() => setShowAiNoMoves(false), 2300);
+                const confirmTimer = setTimeout(() => {
+                    startTransition(() => {
+                        dispatch({ type: 'CONFIRM_TURN_END' });
+                        broadcastGameUpdateRef.current('CONFIRM_TURN_END');
+                    });
+                }, 2300);
+                return () => {
+                    if (aiNoMovesTimer.current) clearTimeout(aiNoMovesTimer.current);
+                    clearTimeout(hideTimer);
+                    clearTimeout(confirmTimer);
+                };
+            } else {
+                setShowAiNoMoves(false);
+            }
+            setShowConfirmationModal(false);
+            setIsFadingOut(false);
+            return;
+        }
+
+        // Human (or H2H) path — generic modal.
+        setShowConfirmationModal(isBlocked);
         setIsFadingOut(false);
         
         let confirmTimer: ReturnType<typeof setTimeout>;
 
-        // ONLY auto-confirm in AI mode. In Human mode, wait for manual confirmation or signal.
-        if (isVsComputer) {
-            // Auto-dismiss after 2 seconds (plus fade)
+        // Only the player whose turn it is should broadcast the confirmation in H2H
+        const isActivePlayer = isVsComputer || state.turn === myColor;
+
+        if (isActivePlayer) {
+            const initialDelay = isBlocked ? 2000 : 800; // Faster confirmation if not blocked
             const displayTimer = setTimeout(() => {
-                if (isBlocked) setIsFadingOut(true); // Start fade out only if visible
-                
-                // Wait for fade animation (300ms) then confirm
-                // If not blocked (invisible), we can just confirm immediately after the delay
+                if (isBlocked) setIsFadingOut(true);
                 const delay = isBlocked ? 300 : 0;
-                
                 confirmTimer = setTimeout(() => {
                     startTransition(() => {
                         dispatch({ type: 'CONFIRM_TURN_END' });
@@ -1223,7 +1300,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                         setShowConfirmationModal(false);
                     });
                 }, delay);
-            }, 2000); 
+            }, initialDelay); 
 
             return () => {
                 clearTimeout(displayTimer);
@@ -1233,8 +1310,9 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     } else {
         setShowConfirmationModal(false);
         setIsFadingOut(false);
+        setShowAiNoMoves(false);
     }
-  }, [state.needsTurnConfirmation, isPending, isThinking, dispatch, state.dice.length, state.usedDice.length, isVsComputer, computerPlayer, state.turn]);
+  }, [state.needsTurnConfirmation, isPending, isThinking, dispatch, state.dice.length, state.usedDice.length, isVsComputer, computerPlayer, state.turn, myColor]);
 
   /* 
    * Hand Interaction - Mapped to Tap/Select Logic (Temporary Bridge)
@@ -1568,6 +1646,12 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
         // and won, winner==='black' but the old code produced userWon=false → wrongly DEDUCTED points.
         const humanColor = myColor ?? myColorRef.current ?? 'white';
         const userWon = winner === humanColor;
+        // Session tally: count this game once (guard against double-fire).
+        if (!gameEndCountedRef.current) {
+          gameEndCountedRef.current = true;
+          if (userWon) setSessionGamesWon(w => w + 1);
+          else setSessionGamesLost(l => l + 1);
+        }
         // Ensure totalGanado is always positive - it's the ABSOLUTE value of points at stake
         const pointsAtStake = Math.abs(totalGanado);
         
@@ -1578,6 +1662,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
           .then((epicTaunt: string | null) => {
             if (epicTaunt) {
               triggerTaunt(userWon ? 'lose' : 'win'); // AI 'loses' when user wins, AI 'wins' when user loses
+              sfx.win();
             }
           })
           .catch((err: Error) => {
@@ -1660,10 +1745,13 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       dispatch({ type: 'ROLL_DICE', dice });
       
       // 3. Broadcast Network
-broadcastGameUpdate('ROLL_DICE', { dice });
+      broadcastGameUpdate('ROLL_DICE', { dice });
     });
-    
-    // AI Taunts based on who's rolling
+
+    // SOUND: dice roll rattle (best-effort; gated on vivo_sound_enabled)
+    sfx.roll();
+    primeAudio();
+
     if (isVsComputer) {
       if (isComputerTurn) {
         // AI rolling - sassy comments (DISABLED to prevent double comments with 'thinking')
@@ -1677,6 +1765,8 @@ broadcastGameUpdate('ROLL_DICE', { dice });
   }, [dispatch, broadcastGameUpdate, isTurnActive, isVsComputer, state.turn, state.dice.length, state.cubeOwner, state.cube, triggerTaunt]);
 
   const handleNewGame = useCallback(() => {
+    // Allow the next game to be counted in the session tally again.
+    gameEndCountedRef.current = false;
     // 1. Clear the stake reservation so the new game starts fresh
     if (user?.id) {
       const storageKey = initialRoomId 
@@ -2018,13 +2108,30 @@ broadcastGameUpdate('ROLL_DICE', { dice });
 
       {initialMode === 'human' && !isOpponentPresent && connectionStatus !== 'connected' && !state.winner && !opponentAbandoned && !insufficientFunds && (
         <div className="absolute inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none">
-          <div className="bg-panel border border-emerald-500/30 p-8 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(16,185,129,0.2)] animate-pulse pointer-events-auto">
-            <div className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-6"></div>
-            <h2 className="text-2xl font-bold text-white mb-2 font-display">Esperando a tu oponente...</h2>
-            <p className="text-emerald-400/80">
-              La partida comenzará automáticamente cuando tu oponente se conecte a la sala.
-            </p>
-          </div>
+          {hasGameStarted ? (
+            // Mid-game disconnect — opponent WAS here but left
+            <div className="bg-panel border border-amber-500/30 p-8 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(245,158,11,0.2)] pointer-events-auto">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 text-amber-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-2 font-display">¡Conexión perdida!</h2>
+              <p className="text-amber-400/90 mb-2">
+                Tu oponente se ha desconectado de la partida.
+              </p>
+              <p className="text-muted-foreground text-sm">
+                Esperando reconexión... Si no regresa en 10 segundos, podrás reclamar la victoria.
+              </p>
+            </div>
+          ) : (
+            // Initial join — opponent hasn't arrived yet
+            <div className="bg-panel border border-emerald-500/30 p-8 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(16,185,129,0.2)] animate-pulse pointer-events-auto">
+              <div className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-6"></div>
+              <h2 className="text-2xl font-bold text-white mb-2 font-display">Esperando a tu oponente...</h2>
+              <p className="text-emerald-400/80">
+                La partida comenzará automáticamente cuando tu oponente se conecte a la sala.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -2080,6 +2187,7 @@ broadcastGameUpdate('ROLL_DICE', { dice });
             showVideo={true}
             showOverlay={false} 
             isActive={true} 
+            onPermissionDenied={() => setCameraPermState('denied')}
           />
         </div>
       )}
@@ -2100,6 +2208,7 @@ broadcastGameUpdate('ROLL_DICE', { dice });
                     showVideo={true} 
                     showOverlay={false}
                     isActive={true}
+                    onPermissionDenied={() => setCameraPermState('denied')}
                 />
              </div>
              {/* Ghost Hand Layer (Receives Data) */}
@@ -2114,7 +2223,16 @@ broadcastGameUpdate('ROLL_DICE', { dice });
             <GameSidebar
             state={optimisticState}
             isHandTracking={isHandTracking}
-            onToggleHandTracking={() => setIsHandTracking(!isHandTracking)}
+            onToggleHandTracking={() => {
+              if (isHandTracking) {
+                setIsHandTracking(false);
+              } else {
+                // E / AR-UX: show the explainer BEFORE starting the camera.
+                setCameraPermState('explain');
+              }
+            }}
+            onOpenTutorial={() => setShowTutorial(true)}
+            onOpenShortcuts={() => setShowShortcuts(true)}
             onNewGame={handleNewGame}
             onExit={() => handleExitGame('/')}
             onSetOpacity={setBoardOpacity}
@@ -2127,6 +2245,10 @@ broadcastGameUpdate('ROLL_DICE', { dice });
             myColor={myColor}
             onAcceptDouble={handleAcceptDouble}
             onDenyDouble={handleDropDouble}
+            sessionWins={sessionGamesWon}
+            sessionLosses={sessionGamesLost}
+            aiDifficulty={aiDifficulty}
+            onSetAiDifficulty={setAiDifficulty}
             />
         </div>
       </aside>
@@ -2136,7 +2258,16 @@ broadcastGameUpdate('ROLL_DICE', { dice });
           <GameSidebar
             state={optimisticState}
             isHandTracking={isHandTracking}
-            onToggleHandTracking={() => setIsHandTracking(!isHandTracking)}
+            onToggleHandTracking={() => {
+              if (isHandTracking) {
+                setIsHandTracking(false);
+              } else {
+                // E / AR-UX: show the explainer BEFORE starting the camera.
+                setCameraPermState('explain');
+              }
+            }}
+            onOpenTutorial={() => setShowTutorial(true)}
+            onOpenShortcuts={() => setShowShortcuts(true)}
             onNewGame={handleNewGame}
             onExit={() => handleExitGame('/')}
             onSetOpacity={setBoardOpacity}
@@ -2149,6 +2280,10 @@ broadcastGameUpdate('ROLL_DICE', { dice });
             myColor={myColor}
             onAcceptDouble={handleAcceptDouble}
             onDenyDouble={handleDropDouble}
+            sessionWins={sessionGamesWon}
+            sessionLosses={sessionGamesLost}
+            aiDifficulty={aiDifficulty}
+            onSetAiDifficulty={setAiDifficulty}
           />
       </div>
 
@@ -2259,6 +2394,9 @@ broadcastGameUpdate('ROLL_DICE', { dice });
             getPixelCoordinates={getPixelCoordinates}
             boardOpacity={boardOpacity}
             isPending={isPending}
+            geometry={geometry}
+            animatingChecker={animatingChecker}
+            isAnimating={animatingChecker !== null}
           />
          
          {/* Betting Info - Mobile version (right side) REMOVED — now inside sidebar */}
@@ -2383,6 +2521,25 @@ broadcastGameUpdate('ROLL_DICE', { dice });
                </div>
             </div>
          )}
+
+        {/* AI "Sin movimientos" popup — isolated from the human modal */}
+        {showAiNoMoves && (
+           <div className={`absolute inset-0 z-50 flex items-end justify-center pb-[clamp(5rem,14vh,11rem)]
+                transition-opacity duration-300 ease-in-out pointer-events-none
+                ${aiNoMovesFading ? 'opacity-0' : 'opacity-100'}`}>
+              <div className="bg-zinc-900/95 border-2 border-rose-500/70 px-6 py-4 rounded-2xl shadow-2xl flex flex-col items-center gap-2 animate-in fade-in slide-in-from-bottom-4 duration-200 pointer-events-auto mx-4 max-w-[280px] w-full">
+                 <div className="flex items-center gap-2">
+                    <Cpu className="w-5 h-5 text-rose-400" />
+                    <p className="text-sm font-black text-rose-400 uppercase tracking-wider text-center">
+                       IA: Sin movimientos
+                    </p>
+                 </div>
+                 <p className="text-xs text-white/70 text-center">
+                    La IA no puede mover. Turno pasa.
+                 </p>
+              </div>
+           </div>
+        )}
          
          {/* Debug Ripple */}
          {lastTouch && (
@@ -2624,9 +2781,29 @@ broadcastGameUpdate('ROLL_DICE', { dice });
                showVideo={false} // Hide Video Here
                showOverlay={true} // Show Cursor Here
                isActive={isTurnActive} // Only show overlay when actively playing
+               onPermissionDenied={() => setCameraPermState('denied')}
              />
           </div>
       )}
+
+      {/* E / AR-UX: camera permission explainer — shown BEFORE the camera
+          starts, never auto-started. */}
+      <CameraPermissionModal
+        state={cameraPermState}
+        onAllow={() => {
+          setCameraPermState(null);
+          setIsHandTracking(true);
+        }}
+        onCancel={() => setCameraPermState(null)}
+        onRetry={() => {
+          setCameraPermState(null);
+          setIsHandTracking(true);
+        }}
+      />
+
+      {/* First-run instructions tutorial */}
+      <FirstRunTutorial isOpen={showTutorial} onClose={() => setShowTutorial(false)} />
+      <KeyboardShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
     </div>
   );
 }

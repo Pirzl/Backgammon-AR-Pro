@@ -1,0 +1,38 @@
+npm warn Unknown cli config "--run". This will stop working in the next major version of npm.
+
+> vivo@0.0.0 test
+> vitest
+
+
+[1m[44m DEV [49m[22m [34mv4.0.18 [39m[90mE:/Proyecto/BACKGAMMON/BACKGAMMON-VIVO[39m
+
+ [32mÔ£ô[39m src/features/ai-worker/zobrist.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 65[2mms[22m[39m
+ [32mÔ£ô[39m src/features/hand-tracking/lib/useBoardGeometry.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32mÔ£ô[39m src/features/hand-tracking/lib/useGestureRecognition.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 31[2mms[22m[39m
+ [32mÔ£ô[39m src/test/security_integrity.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32mÔ£ô[39m src/features/networking/lib/useSupabaseRealtime.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32mÔ£ô[39m src/features/ai-worker/api.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 3695[2mms[22m[39m
+       [33m[2mÔ£ô[22m[39m preserves 64-bit precision when storing and retrieving [33m 426[2mms[22m[39m
+       [33m[2mÔ£ô[22m[39m batch stores multiple evaluations [33m 355[2mms[22m[39m
+       [33m[2mÔ£ô[22m[39m batch handles large datasets (100 rows) [33m 367[2mms[22m[39m
+       [33m[2mÔ£ô[22m[39m handles edge case equity values [33m 689[2mms[22m[39m
+ [32mÔ£ô[39m src/entities/game/critical-rules.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32mÔ£ô[39m src/features/ai-worker/expectimax.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32mÔ£ô[39m src/entities/game/rules.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+stderr | src/test/security_payloads.test.ts > Signaling Payload Validation > should reject unknown types
+[Security] Invalid payload type: pwn
+
+stderr | src/test/security_payloads.test.ts > Signaling Payload Validation > should reject oversized payloads (check DoS prevention)
+[Security] Payload validation failed: Size 11025 exceeds limit 10240
+
+ [32mÔ£ô[39m src/test/security_payloads.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m10 passed[39m[22m[90m (10)[39m
+[2m      Tests [22m [1m[32m58 passed[39m[22m[90m (58)[39m
+[2m   Start at [22m 18:17:58
+[2m   Duration [22m 35.14s[2m (transform 2.19s, setup 12.08s, import 5.99s, tests 3.88s, environment 75.06s)[22m
+
+[1m[42m PASS [49m[22m [32mWaiting for file changes...[39m
+       [2mpress [22m[1mh[22m[2m to show help[22m[2m, [22m[2mpress [22m[1mq[22m[2m to quit[22m
+[31mCancelling test run. Press CTRL+c again to exit forcefully.
+[39m

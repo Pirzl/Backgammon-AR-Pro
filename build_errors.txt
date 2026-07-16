@@ -1,0 +1,7 @@
+
+> vivo@0.0.0 build
+> tsc -b && vite build
+
+src/features/minigames/pong/lib/usePongPhysics.ts(15,11): error TS6196: 'GameState' is declared but never used.
+src/features/minigames/pong/lib/usePongPhysics.ts(40,22): error TS2554: Expected 1 arguments, but got 0.
+src/features/minigames/pong/ui/PongGame.tsx(127,22): error TS2552: Cannot find name 'Gamepad2'. Did you mean 'Gamepad'?

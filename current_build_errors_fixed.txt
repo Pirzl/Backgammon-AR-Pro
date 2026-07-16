@@ -1,0 +1,31 @@
+
+> vivo@0.0.0 build
+> tsc -b && vite build
+
+[36mvite v7.3.1 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32mÔ£ô[39m 2916 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32massets/hand-detection.worker-Blq9dIoW.js  [39m[1m[2m  1.91 kB[22m[1m[22m
+[2mdist/[22m[32mindex.html                                [39m[1m[2m  5.61 kB[22m[1m[22m[2m Ôöé gzip:   2.13 kB[22m
+[2mdist/[22m[32massets/worker-Bp85Pq5n.js                 [39m[1m[2m187.07 kB[22m[1m[22m
+[2mdist/[22m[35massets/LandingPage-CHdoq91X.css           [39m[1m[2m 10.94 kB[22m[1m[22m[2m Ôöé gzip:   2.78 kB[22m
+[2mdist/[22m[35massets/index-CVcHRDkA.css                 [39m[1m[2m111.43 kB[22m[1m[22m[2m Ôöé gzip:  17.73 kB[22m
+[2mdist/[22m[36massets/api-0xU0qWng.js                    [39m[1m[2m  0.94 kB[22m[1m[22m[2m Ôöé gzip:   0.50 kB[22m
+[2mdist/[22m[36massets/vendor-react-DnRvXSSp.js           [39m[1m[2m  3.66 kB[22m[1m[22m[2m Ôöé gzip:   1.38 kB[22m
+[2mdist/[22m[36massets/useConversation-DlnlrKHP.js        [39m[1m[2m  4.54 kB[22m[1m[22m[2m Ôöé gzip:   1.39 kB[22m
+[2mdist/[22m[36massets/AdminLayout-Pvg48xNb.js            [39m[1m[2m  4.87 kB[22m[1m[22m[2m Ôöé gzip:   1.34 kB[22m
+[2mdist/[22m[36massets/RankBadge-CShyIr_M.js              [39m[1m[2m  6.47 kB[22m[1m[22m[2m Ôöé gzip:   2.40 kB[22m
+[2mdist/[22m[36massets/useClients-Ez-2UvzL.js             [39m[1m[2m  8.47 kB[22m[1m[22m[2m Ôöé gzip:   2.89 kB[22m
+[2mdist/[22m[36massets/SettingsPanel-shlaPj5C.js          [39m[1m[2m 12.37 kB[22m[1m[22m[2m Ôöé gzip:   3.03 kB[22m
+[2mdist/[22m[36massets/PlayerDirectory-5Gm0Z7FW.js        [39m[1m[2m 15.15 kB[22m[1m[22m[2m Ôöé gzip:   4.17 kB[22m
+[2mdist/[22m[36massets/LandingPage-BoTlvYJu.js            [39m[1m[2m 26.76 kB[22m[1m[22m[2m Ôöé gzip:   7.10 kB[22m
+[2mdist/[22m[36massets/Toast-DUPJDM2n.js                  [39m[1m[2m 37.88 kB[22m[1m[22m[2m Ôöé gzip:  16.63 kB[22m
+[2mdist/[22m[36massets/UserDashboard-BnUBuagb.js          [39m[1m[2m 85.68 kB[22m[1m[22m[2m Ôöé gzip:  20.36 kB[22m
+[2mdist/[22m[36massets/vendor-ui-DNvvPXiI.js              [39m[1m[2m156.37 kB[22m[1m[22m[2m Ôöé gzip:  52.37 kB[22m
+[2mdist/[22m[36massets/vendor-utils-rHgJDrTE.js           [39m[1m[2m170.07 kB[22m[1m[22m[2m Ôöé gzip:  44.30 kB[22m
+[2mdist/[22m[36massets/index-C8rlRPO9.js                  [39m[1m[2m266.03 kB[22m[1m[22m[2m Ôöé gzip:  83.38 kB[22m
+[2mdist/[22m[36massets/GameBoard-DcvNTt2O.js              [39m[1m[2m272.43 kB[22m[1m[22m[2m Ôöé gzip:  86.26 kB[22m
+[2mdist/[22m[36massets/AdminDashboard-CKVi12j_.js         [39m[1m[2m403.59 kB[22m[1m[22m[2m Ôöé gzip: 117.95 kB[22m
+[32mÔ£ô built in 16.62s[39m

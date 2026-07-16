@@ -1,0 +1,7 @@
+src/features/admin/components/SettingsPanel.tsx(1,27): error TS6133: 'useEffect' is declared but its value is never read.
+src/features/admin/components/SettingsPanel.tsx(5,36): error TS6133: 'Power' is declared but its value is never read.
+src/features/admin/components/SettingsPanel.tsx(6,27): error TS6133: 'ExternalLink' is declared but its value is never read.
+src/features/admin/components/SettingsPanel.tsx(6,56): error TS6133: 'CreditCard' is declared but its value is never read.
+src/features/admin/components/SettingsPanel.tsx(7,3): error TS6133: 'Users' is declared but its value is never read.
+src/features/admin/components/SettingsPanel.tsx(9,28): error TS6196: 'GameSetting' is declared but never used.
+src/features/admin/components/SettingsPanel.tsx(109,9): error TS6133: 'handlePaymentConfigChange' is declared but its value is never read.

@@ -1,0 +1,5 @@
+
+> vivo@0.0.0 build
+> tsc -b && vite build
+
+src/features/client/components/UserDashboard.tsx(8,1): error TS6133: 'InvitationInbox' is declared but its value is never read.

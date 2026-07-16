@@ -1,13 +1,15 @@
-import { Power, Hand, Settings, User as ProfileIcon, Menu, X, PanelLeftClose } from 'lucide-react';
+import { Power, Hand, Settings, User as ProfileIcon, Menu, X, PanelLeftClose, BookOpen, Keyboard } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { UIGameState } from '../model/types';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { BettingInfo } from './BettingInfo';
 import { HandTrackingSwitch } from '../../../shared/ui/HandTrackingSwitch/HandTrackingSwitch';
+import type { GameMode } from '../../admin/gameSettingsTypes';
 
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth/useAuth';
-import { usePlayerStats } from '../lib/usePlayerStats';
+import { SoundToggleButton } from '../../../shared/ui/SoundIcon';
+import { isSoundEnabled, setSoundEnabled } from '../lib/sound';
 
 interface GameSidebarProps {
   state: UIGameState;
@@ -15,6 +17,8 @@ interface GameSidebarProps {
   onToggleHandTracking: () => void;
   onNewGame: () => void;
   onExit: () => void;
+  onOpenTutorial?: () => void;
+  onOpenShortcuts?: () => void;
   onSetOpacity: (val: number) => void;
   boardOpacity: number;
   variant?: 'sidebar' | 'drawer';
@@ -26,6 +30,13 @@ interface GameSidebarProps {
   myColor?: 'white' | 'black' | null;
   onAcceptDouble?: () => void;
   onDenyDouble?: () => void;
+  aiDifficulty?: number;
+  onSetAiDifficulty?: (val: number) => void;
+  initialMode?: GameMode;
+  // Session tally (wins/losses since entering /game; resets on re-entry).
+  // Kept separate from the Supabase lifetime stats used for CRM/AI learning.
+  sessionWins?: number;
+  sessionLosses?: number;
 }
 
 export function GameSidebar({
@@ -34,6 +45,8 @@ export function GameSidebar({
   onToggleHandTracking,
   onNewGame,
   onExit,
+  onOpenTutorial,
+  onOpenShortcuts,
   onSetOpacity,
   boardOpacity,
   variant = 'drawer',
@@ -44,11 +57,23 @@ export function GameSidebar({
   myColor = null,
   onAcceptDouble,
   onDenyDouble,
+  aiDifficulty = 5,
+  onSetAiDifficulty,
+  initialMode = 'ai',
+  sessionWins = 0,
+  sessionLosses = 0,
 }: GameSidebarProps) {
-  // Force HMR refresh
   const { turn, matchScore } = state;
   const { user } = useAuth();
-  const { wins, losses, loading: statsLoading } = usePlayerStats();
+  const [soundOn, setSoundOn] = useState(() => isSoundEnabled());
+
+  const toggleSound = useCallback(() => {
+    setSoundOn((prev) => {
+      const next = !prev;
+      setSoundEnabled(next);
+      return next;
+    });
+  }, []);
   const navigate = useNavigate();
   
   // Internal state fallback if not controlled
@@ -263,17 +288,13 @@ export function GameSidebar({
                ) : (
                  <button
                   onClick={onToggleHandTracking}
-                  className={`
-                    flex flex-col items-center justify-center p-3 rounded-xl border transition-all
-                    ${isHandTracking 
-                      ? 'bg-amber-500/20 border-amber-500/50 text-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.2)]' 
-                      : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}
-                  `}
-                >
+                  className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${isHandTracking ? 'bg-amber-500/20 border-amber-500/50 text-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}`}
+                 >
                   <Hand size={20} className="mb-1" />
                   <span className="text-[10px] font-bold uppercase">CÁMARA {isHandTracking ? 'ON' : 'OFF'}</span>
-                </button>
+                 </button>
                )}
+               <SoundToggleButton on={soundOn} onToggle={toggleSound} />
 
             </div>
 
@@ -287,6 +308,40 @@ export function GameSidebar({
                 <Settings size={16} />
                 NUEVA PARTIDA
               </button>
+
+              {onOpenTutorial && (
+                <button
+                  onClick={onOpenTutorial}
+                  className="w-full py-3 bg-slate-500/10 hover:bg-slate-500/20 border border-slate-500/20 rounded-xl text-slate-300 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
+                >
+                  <BookOpen size={16} />
+                  TUTORIAL
+                </button>
+              )}
+
+              {onOpenShortcuts && (
+                <button
+                  onClick={onOpenShortcuts}
+                  className="w-full py-3 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 rounded-xl text-indigo-300 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
+                >
+                  <Keyboard size={16} />
+                  ATAJOS
+                </button>
+              )}
+
+              {/* Session game tally — wins/losses since entering /game.
+                  Resets to 0 on exit/re-entry (GameBoard remounts).
+                  Kept separate from Supabase lifetime stats (CRM/AI). */}
+              <div className="grid grid-cols-2 gap-2 mb-1">
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg flex flex-col items-center">
+                      <span className="text-[10px] text-emerald-500 font-bold uppercase tracking-wider">VICTORIAS</span>
+                      <span className="text-lg font-black text-emerald-400">{sessionWins}</span>
+                  </div>
+                  <div className="bg-rose-500/10 border border-rose-500/20 p-2 rounded-lg flex flex-col items-center">
+                      <span className="text-[10px] text-rose-500 font-bold uppercase tracking-wider">DERROTAS</span>
+                      <span className="text-lg font-black text-rose-400">{sessionLosses}</span>
+                  </div>
+              </div>
 
               {/* Authentication */}
               {!user ? (
@@ -306,18 +361,6 @@ export function GameSidebar({
                  </div>
               ) : (
                 <div className="flex flex-col gap-2">
-                    {/* User Stats Display */}
-                    <div className="grid grid-cols-2 gap-2 mb-1">
-                        <div className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg flex flex-col items-center">
-                            <span className="text-[10px] text-emerald-500 font-bold uppercase tracking-wider">VICTORIAS</span>
-                            <span className="text-lg font-black text-emerald-400">{statsLoading ? '-' : wins}</span>
-                        </div>
-                        <div className="bg-rose-500/10 border border-rose-500/20 p-2 rounded-lg flex flex-col items-center">
-                            <span className="text-[10px] text-rose-500 font-bold uppercase tracking-wider">DERROTAS</span>
-                            <span className="text-lg font-black text-rose-400">{statsLoading ? '-' : losses}</span>
-                        </div>
-                    </div>
-
                     <button
                       onClick={() => navigate('/dashboard')}
                       className="w-full py-3 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 rounded-xl text-cyan-400 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
@@ -331,6 +374,30 @@ export function GameSidebar({
 
             {/* Settings / Footer */}
             <div className="mt-8 pt-6 border-t border-white/10 flex flex-col gap-4">
+              {/* AI Difficulty Slider - Only if playing against AI */}
+              {(initialMode === 'ai' || initialMode === 'training') && onSetAiDifficulty && (
+                <div className="flex flex-col gap-2 p-3 bg-white/5 border border-white/10 rounded-xl">
+                   <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                      <span>DIFICULTAD IA</span>
+                      <span>{aiDifficulty === 10 ? 'LEYENDA (10)' : aiDifficulty === 1 ? 'BEBÉ (1)' : `NIVEL ${aiDifficulty}`}</span>
+                   </div>
+                   <input 
+                     type="range" 
+                     min="1" 
+                     max="10" 
+                     step="1"
+                     value={aiDifficulty}
+                     onChange={(e) => onSetAiDifficulty(parseInt(e.target.value, 10))}
+                     className="w-full accent-cyan-400 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer"
+                   />
+                   <div className="flex justify-between text-[8px] text-white/30 font-bold uppercase">
+                      <span>FÁCIL</span>
+                      <span>MEDIO</span>
+                      <span>DIFÍCIL</span>
+                   </div>
+                </div>
+              )}
+
               <div className="flex flex-col gap-2">
                  <div className="flex justify-between text-[10px] font-bold uppercase text-white/40 tracking-wider">
                     <span>OPACIDAD TABLERO</span>
