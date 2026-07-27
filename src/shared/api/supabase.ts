@@ -3,13 +3,15 @@
  * Configured with BigInt-safe handling for Zobrist hashes
  */
 import { createClient } from '@supabase/supabase-js';
+import { SUPABASE_ANON_KEY, SUPABASE_URL, isSupabaseConfigured } from './env';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Fall back to harmless placeholders instead of throwing at module scope.
+// Throwing here takes down the entire app before React can render anything;
+// with placeholders the UI still boots and only network calls fail.
+const supabaseUrl = SUPABASE_URL || 'http://localhost:54321';
+const supabaseAnonKey = SUPABASE_ANON_KEY || 'public-anon-key-missing';
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
-}
+export { isSupabaseConfigured };
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {

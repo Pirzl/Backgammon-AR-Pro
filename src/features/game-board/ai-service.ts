@@ -4,10 +4,10 @@ import { nnModel } from "./nn-model";
 import { hashBoard } from "../ai-worker/zobrist";
 import { fetchEvaluation, storeEvaluation } from "../ai-worker/api";
 import { supabase } from "../../shared/api/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "../../shared/api/env";
 import type { GameState } from "../../entities/game/types";
 
 // ─── Gemini proxy via Supabase Edge Function (API key is SERVER-SIDE ONLY) ───
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const GEMINI_PROXY_URL = `${SUPABASE_URL}/functions/v1/gemini-proxy`;
 
 /** Call Gemini via Edge Function proxy (API key stays server-side) */
@@ -17,14 +17,14 @@ async function callGeminiProxy(
 ): Promise<string | { moves: { from: number; die: number }[] } | null> {
   try {
     const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token ?? import.meta.env.VITE_SUPABASE_ANON_KEY;
+    const token = session?.access_token ?? SUPABASE_ANON_KEY;
 
     const response = await fetch(GEMINI_PROXY_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
-        'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY ?? '',
+        'apikey': SUPABASE_ANON_KEY,
       },
       body: JSON.stringify({ prompt, mode }),
     });
