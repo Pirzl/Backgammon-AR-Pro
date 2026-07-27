@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { Camera, CameraOff, ShieldCheck } from 'lucide-react';
 
 /**
@@ -32,9 +33,14 @@ export function CameraPermissionModal({
 
   const isDenied = state === 'denied';
 
-  return (
+  // The game board root applies `[transform:translateZ(0)]`, which turns it into
+  // the containing block for `position: fixed` AND a new stacking context. A
+  // modal rendered inside it can never rise above the in-game camera overlays
+  // (CalibrationOverlay is z-200), so it gets buried and becomes unclickable.
+  // Rendering into <body> via a portal escapes that trap entirely.
+  return createPortal(
     <div
-      className="fixed inset-0 z-[160] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[350] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
       role="dialog"
       aria-modal="true"
       aria-label={isDenied ? 'Permiso de cámara denegado' : 'Permiso de cámara'}
@@ -87,6 +93,7 @@ export function CameraPermissionModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

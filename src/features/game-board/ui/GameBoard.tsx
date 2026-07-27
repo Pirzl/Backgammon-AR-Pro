@@ -710,6 +710,14 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   // so the user explicitly allows it. Never auto-starts the camera.
   const [cameraPermState, setCameraPermState] = useState<'explain' | 'denied' | null>(null);
 
+  // When the browser blocks the camera we must also tear down hand tracking.
+  // Otherwise the tracking layers (and CalibrationOverlay) stay mounted on top
+  // of the "denied" dialog, leaving the user unable to retry or cancel.
+  const handleCameraDenied = useCallback(() => {
+    setIsHandTracking(false);
+    setCameraPermState('denied');
+  }, []);
+
   // First-run tutorial (instructions) — shown once per user/browser.
   const [showTutorial, setShowTutorial] = useState(() => !hasSeenTutorial());
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -2187,7 +2195,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             showVideo={true}
             showOverlay={false} 
             isActive={true} 
-            onPermissionDenied={() => setCameraPermState('denied')}
+            onPermissionDenied={handleCameraDenied}
           />
         </div>
       )}
@@ -2208,7 +2216,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                     showVideo={true} 
                     showOverlay={false}
                     isActive={true}
-                    onPermissionDenied={() => setCameraPermState('denied')}
+                    onPermissionDenied={handleCameraDenied}
                 />
              </div>
              {/* Ghost Hand Layer (Receives Data) */}
@@ -2781,7 +2789,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                showVideo={false} // Hide Video Here
                showOverlay={true} // Show Cursor Here
                isActive={isTurnActive} // Only show overlay when actively playing
-               onPermissionDenied={() => setCameraPermState('denied')}
+               onPermissionDenied={handleCameraDenied}
              />
           </div>
       )}
