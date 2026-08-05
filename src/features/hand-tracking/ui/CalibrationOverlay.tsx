@@ -34,12 +34,20 @@ const DEFAULT_CORNERS: Point[] = [
 type CalibrationStep = 'board' | 'success';
 
 export function CalibrationOverlay({ onClose, onCalibrate, boardGeometry }: CalibrationOverlayProps) {
-  const { videoRef, isLoading, stream } = useCamera();
+  const { videoRef, isLoading, stream, startCamera, stopCamera } = useCamera({ shared: true });
   const { setCalibrationPoints, startDetection, stopDetection, setHandCalibration } = useSharedMediaPipe();
   const { saveCalibration, isRegisteredUser } = useCalibrationSync();
   const containerRef = useRef<HTMLDivElement>(null);
   const [showToast, setShowToast] = useState(false);
   const [step, setStep] = useState<CalibrationStep>('board');
+
+  // Reusa la cámara ÚNICA de la app (no un segundo getUserMedia → evita
+  // "cámara en uso" en móvil) y la adquiere al montar / libera al desmontar.
+  useEffect(() => {
+    startCamera().catch(console.error);
+    return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Connect video to MediaPipe detection when ready (use ref to prevent infinite loop)
   const detectionStartedRef = useRef(false);

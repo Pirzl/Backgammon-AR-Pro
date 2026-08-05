@@ -746,7 +746,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     const saved = localStorage.getItem('vivo_hand_tracking_enabled');
     return saved === 'true';
   });
-  const { stopCamera, startCamera } = useCamera();
+  const { stopCamera, startCamera } = useCamera({ shared: true });
 
   // Camera permission explainer (E / AR-UX): shown BEFORE the camera starts,
   // so the user explicitly allows it. Never auto-starts the camera.
@@ -2280,6 +2280,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             showOverlay={false} 
             isActive={true}
             mirrored={true}
+            useSharedCamera={true}
           />
         </div>
       )}
@@ -2899,6 +2900,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                showOverlay={true} // Show Cursor Here
                isActive={isTurnActive} // Only show overlay when actively playing
                mirrored={true}
+               useSharedCamera={true}
              />
           </div>
       )}
