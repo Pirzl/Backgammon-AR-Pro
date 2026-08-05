@@ -3,30 +3,28 @@ import type { PlayerColor } from '../../entities/game/types';
 import { getBarIndex, getOffIndex } from '../../entities/game/rules';
 
 /**
+ * Expected trained_count of /model_weights.json. Bump this after every retrain so the
+ * browser busts its cache (fetch ?v=...) and warns when stale weights are still loaded.
+ */
+export const WEIGHTS_VERSION = 244663;
+
+/**
  * Manages the TensorFlow.js Neural Network model for Backgammon position evaluation.
+ * Loads base model from /ai/tfjs_model/tfjs_model/model.json and applies optional local weights
+ * from /model_weights.json so self-play training results take effect in the browser.
  */
 export class NNModel {
   private model: tf.LayersModel | null = null;
   private isLoading: boolean = false;
 
-  /**
-   * Loads the model from the specified path.
-   * Path should point to the model.json file.
-   */
   async load(path: string = '/ai/tfjs_model/tfjs_model/model.json'): Promise<void> {
     if (this.model || this.isLoading) return;
-
     this.isLoading = true;
     try {
       console.log('AI: Loading Neural Network from', path);
       this.model = await tf.loadLayersModel(path);
-      console.log('AI: Neural Network loaded successfully');
-      
-      // Warm up the model with a dummy prediction
-      const dummyInput = tf.zeros([1, 198]);
-      const result = this.model.predict(dummyInput) as tf.Tensor;
-      result.dispose();
-      dummyInput.dispose();
+      console.log('AI: Neural Network base model loaded successfully');
+      await this.applyLocalWeights();
     } catch (error) {
       console.error('AI: Failed to load Neural Network model:', error);
       this.model = null;
@@ -35,18 +33,82 @@ export class NNModel {
     }
   }
 
+  private async applyLocalWeights(): Promise<void> {
+    if (!this.model) return;
+    const payload = await this.fetchRuntimeWeights();
+    if (!payload || !payload.weights || payload.weights.length === 0) return;
+    try {
+      const loadedCount = payload.trained_count ?? -1;
+      if (loadedCount !== WEIGHTS_VERSION) {
+        console.warn(
+          `AI: Stale model weights detected (trained_count=${loadedCount}, expected ${WEIGHTS_VERSION}). ` +
+            `The page may be showing an older checkpoint.`
+        );
+      }
+      const tensors = payload.weights.map(w => tf.tensor(w.data, w.shape));
+      this.model.setWeights(tensors);
+      tensors.forEach(t => t.dispose());
+      console.log(
+        `AI: Applied model weights (trained_count=${loadedCount}, updated_at=${payload.updated_at ?? '?'})`
+      );
+    } catch (error) {
+      console.warn('AI: Local weights apply failed:', error);
+    }
+  }
+
   /**
-   * Evaluates a board position using the neural network.
-   * Returns a value between -1 and 1 from the perspective of the player to move.
+   * Loads the current checkpoint. Prefers the live Supabase `model_weights` row
+   * (id='current') so retrains published by the CI pipeline take effect WITHOUT a
+   * redeploy; falls back to the static /model_weights.json asset.
    */
+  private async fetchRuntimeWeights(): Promise<{
+    weights?: { shape: number[]; data: number[] }[];
+    trained_count?: number;
+    updated_at?: string;
+  } | null> {
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+      const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+      if (url && key) {
+        const client = createClient(url, key);
+        const { data, error } = await client
+          .from('model_weights')
+          .select('weights, trained_count, updated_at')
+          .eq('id', 'current')
+          .maybeSingle();
+        if (!error && data?.weights?.length) {
+          console.log('AI: Loaded model weights from Supabase model_weights (runtime)');
+          return data;
+        }
+        if (error) console.warn('AI: Supabase weights fetch error:', error);
+      }
+    } catch (e) {
+      console.warn('AI: Supabase weights fetch failed, using static asset:', e);
+    }
+    // Static fallback (cache-busted with WEIGHTS_VERSION).
+    try {
+      const resp = await fetch(`/model_weights.json?v=${WEIGHTS_VERSION}`);
+      if (!resp.ok) return null;
+      return (await resp.json()) as {
+        weights?: { shape: number[]; data: number[] }[];
+        trained_count?: number;
+        updated_at?: string;
+      };
+    } catch (e) {
+      console.warn('AI: Static weights fetch failed:', e);
+      return null;
+    }
+  }
+
   async evaluate(board: number[], turn: PlayerColor): Promise<number> {
     if (!this.model) {
       await this.load();
-      if (!this.model) return 0; // Fallback if still no model
+      if (!this.model) return 0;
     }
 
     const inputData = this.encodeBoard(board, turn);
-    
+
     return tf.tidy(() => {
       const inputTensor = tf.tensor2d([inputData], [1, 198]);
       const prediction = this.model!.predict(inputTensor) as tf.Tensor;

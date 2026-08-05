@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { validateSignalPayload } from './validateSignalPayload';
+import { sharedCamera } from '../../video-call/lib/sharedCamera';
 
 // Signaling types
 export type SignalData = 
@@ -36,59 +37,63 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
   const localStreamRef = useRef<MediaStream | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]); // NEW: Queue for early candidates
+  const unsubscribeSharedRef = useRef<(() => void) | null>(null);
   
   // Rate limiting for connection attempts
   const lastConnectionAttemptRef = useRef<number>(0);
 
-  // Initialize Media (Camera/Mic)
+  // Initialize Media (Camera/Mic) — uses the app-wide SHARED camera so the
+  // hand tracking and the call never fight over getUserMedia (móvil fix).
   useEffect(() => {
     let isMounted = true;
+    let hasClaim = false;
 
-    // If disabled, just return (cleanup of previous effect handles stopping)
+    // If disabled, just return (cleanup of previous effect handles releasing)
     if (!enabled) return;
 
     const startMedia = async () => {
       try {
-        if (localStreamRef.current) return; // Already started
-
-        // P0: Constraint hardening - relaxed ideal values to prevent OverconstrainedError
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-              width: { ideal: 640 }, 
-              height: { ideal: 480 },
-              facingMode: { ideal: 'user' }
-          },
-          audio: true
-        });
-        
-        if (isMounted) {
-            setLocalStream(stream);
-            localStreamRef.current = stream;
-        } else {
-            // Stream arrived after unmount/disable, stop it immediately
-            stream.getTracks().forEach(t => t.stop());
+        const stream = await sharedCamera.acquire({ video: true, audio: true });
+        if (!isMounted) {
+          // Acquire resolvió después del desmontaje: libera al momento
+          sharedCamera.release();
+          return;
         }
+        hasClaim = true;
+        setLocalStream(stream);
+        localStreamRef.current = stream;
       } catch (err) {
         if (isMounted) {
-            console.warn('[VideoChat] Media access denied or unavailable. Video features will be disabled, but data sync will continue:', err);
+          console.warn('[VideoChat] Media access denied or unavailable. Video features will be disabled, but data sync will continue:', err);
         }
       }
     };
-    
-    console.log('[VideoChat] startMedia initiated. Enabled:', enabled);
+
+    console.log('[VideoChat] startMedia initiated (shared camera). Enabled:', enabled);
 
     startMedia();
 
     return () => {
       isMounted = false;
-      // Cleanup tracks on unmount OR when enabled changes to false
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => track.stop());
-        localStreamRef.current = null;
-        setLocalStream(null);
+      // Release the shared camera claim (stream may stay alive for hand tracking)
+      if (hasClaim) {
+        sharedCamera.release();
       }
+      localStreamRef.current = null;
+      setLocalStream(null);
     };
   }, [enabled]);
+
+  // Keep localStream state in sync if the shared stream is (re)created elsewhere
+  useEffect(() => {
+    return sharedCamera.subscribe(() => {
+      setLocalStream((current) => {
+        const shared = sharedCamera.getStream();
+        if (shared && shared !== current) return shared;
+        return current;
+      });
+    });
+  }, []);
 
   // Initialize Peer Connection & Signaling
   useEffect(() => {
@@ -101,32 +106,30 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
     console.log('[VideoChat] Initializing Peer Connection...');
     const initPeerConnection = async () => {
-        // P0: TURN Credential Fetching
-        const iceServers: RTCIceServer[] = [
+        // P0: TURN Credential Fetching (Metered, server-side via Edge Function).
+        // Without TURN, video fails over mobile/cellular (CGNAT) even though
+        // STUN alone is enough on the same LAN. If the Edge Function is missing
+        // TURN_API_KEY or the fetch fails, we gracefully fall back to STUN.
+        let iceServers: RTCIceServer[] = [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:global.stun.twilio.com:3478' }
         ];
-
-        // P0: TURN Credential Fetching (Disabled for now as API is missing)
-        /*
         try {
-            // Attempt to fetch ephemeral credentials
-            // In dev/mock, this might fail, so we fallback to STUN
-            const res = await fetch('/api/turn-credentials');
+            const turnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/turn-credentials`;
+            const res = await fetch(turnUrl);
             if (res.ok) {
                 const creds = await res.json();
-                if (creds.uris && creds.username && creds.password) {
-                     iceServers = [{
-                         urls: creds.uris,
-                         username: creds.username,
-                         credential: creds.password
-                     }];
+                const servers: RTCIceServer[] = Array.isArray(creds?.iceServers)
+                    ? creds.iceServers
+                    : [];
+                if (servers.length > 0) {
+                    iceServers = servers;
+                    console.log('[VideoChat] Using TURN credentials from Edge Function');
                 }
             }
         } catch (e) {
             console.warn('[Security] TURN fetch failed, falling back to STUN', e);
         }
-        */
 
         // 1. Create PeerConnection
         const pc = new RTCPeerConnection({ iceServers });
@@ -158,6 +161,26 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
             console.log('[VideoChat] No local stream available. Proceeding with Data Channel only.');
         }
 
+        // Shared camera may gain tracks later (e.g. audio added after video-only
+        // acquisition) — re-add any new tracks so the remote always gets them.
+        const ensureSharedTracks = () => {
+            const shared = sharedCamera.getStream();
+            if (!shared || !peerConnectionRef.current) return;
+            const existing = new Set(peerConnectionRef.current.getSenders().map(s => s.track));
+            shared.getTracks().forEach((track) => {
+                if (!existing.has(track)) {
+                    try {
+                        peerConnectionRef.current?.addTrack(track, shared);
+                    } catch (e) {
+                        console.warn('[VideoChat] Could not add late track:', e);
+                    }
+                }
+            });
+        };
+        ensureSharedTracks();
+        const unsubShared = sharedCamera.subscribe(ensureSharedTracks);
+        unsubscribeSharedRef.current = unsubShared;
+
         // 3. Handle Remote Track
         pc.ontrack = (event) => {
             if (event.streams && event.streams[0]) {
@@ -178,6 +201,12 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
         pc.onconnectionstatechange = () => {
             setConnectionStatus(pc.connectionState);
+            // Reconnection: if the D2D/ICE link drops unexpectedly (not a
+            // deliberate hangup), request an ICE restart to re-establish media.
+            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                console.warn('[VideoChat] Connection dropped; restarting ICE...');
+                try { pc.restartIce(); } catch (e) { console.warn('[VideoChat] restartIce failed (non-fatal):', e); }
+            }
         };
 
         // 5. Start Stats Loop (Observability)
@@ -213,6 +242,10 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
     // 5. Cleanup
     return () => {
+      if (unsubscribeSharedRef.current) {
+        unsubscribeSharedRef.current();
+        unsubscribeSharedRef.current = null;
+      }
       if (dataChannelRef.current) dataChannelRef.current.close();
       if (peerConnectionRef.current) {
           peerConnectionRef.current.close();
@@ -239,6 +272,18 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
     try {
       if (data.type === 'offer') {
+        // GLARE HANDLING: si ambos peers inician a la vez, ambos tienen una
+        // oferta local pendiente. El que pierde la carrera hace rollback de su
+        // oferta y acepta la del rival (patrón "polite" estándar de WebRTC).
+        if (pc.signalingState === 'have-local-offer') {
+          console.warn('[VideoChat] Glare detected (offer while have-local-offer). Rolling back to accept remote offer.');
+          try {
+            await pc.setLocalDescription({ type: 'rollback' });
+          } catch (e) {
+            console.warn('[VideoChat] Rollback failed:', e);
+          }
+        }
+
         // Avoiding race conditions or state errors
         if (pc.signalingState !== 'stable') {
             console.warn('[VideoChat] Received offer but signaling state is not stable:', pc.signalingState);
@@ -318,6 +363,12 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
     }
     lastConnectionAttemptRef.current = now;
 
+    // Si en el ínterin ya negociamos (recibimos oferta del rival), no crear otra
+    if (pc.signalingState !== 'stable' || pc.connectionState === 'closed') {
+        console.warn('[VideoChat] startCall skipped: signaling state is', pc.signalingState, 'connection:', pc.connectionState);
+        return;
+    }
+
     setConnectionStatus('connecting');
 
     // Create Data Channel (Initiator only)
@@ -377,13 +428,39 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
       }
   }, [localStream]);
 
-  // Full Revocation (Stop Hardware)
+  // Full Revocation (Privacy): disable tracks instead of stopping hardware,
+  // because the camera is SHARED with hand tracking.
   const stopAllTracks = useCallback(() => {
       if (localStream) {
-          localStream.getTracks().forEach(track => track.stop());
-          setLocalStream(null);
+          localStream.getTracks().forEach(track => track.enabled = false);
       }
   }, [localStream]);
+
+  // Hang up the call (privacy): close the peer connection + data channel and
+  // disable local tracks, but KEEP the game running (realtime sync continues).
+  const hangUp = useCallback(() => {
+      console.log('[VideoChat] Hanging up call. Game continues via realtime sync.');
+      if (peerConnectionRef.current) {
+          try {
+              peerConnectionRef.current.close();
+          } catch (e) {
+              console.warn('[VideoChat] hangUp pc.close error:', e);
+          }
+          peerConnectionRef.current = null;
+      }
+      if (dataChannelRef.current) {
+          try { dataChannelRef.current.close(); } catch { /* ignore */ }
+          dataChannelRef.current = null;
+      }
+      if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach(track => {
+              try { track.enabled = false; } catch { /* ignore */ }
+          });
+      }
+      setRemoteStream(null);
+      setConnectionStatus('closed');
+      setMetrics({ rtt: 0, packetLoss: 0, fps: 0, resolution: '0x0' });
+  }, []);
 
   return {
     localStream,
@@ -395,6 +472,7 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
     toggleAudio,
     toggleVideo,
     stopAllTracks,
+    hangUp,
     metrics // Export metrics
   };
 }

@@ -37,7 +37,7 @@ const enforceNetworkBlock = () => {
 let handLandmarker: any = null;
 let isInitialized = false;
 
-const initializeHandLandmarker = async (modelBuffer: ArrayBuffer) => {
+const initializeHandLandmarker = async (modelBuffer: ArrayBuffer, mediaPipeBase: string) => {
   // Pre-check: Ensure we have network access initially (for debugging) or fail fast if environment is already broken
   if (typeof fetch !== 'function') {
       console.warn('[Worker] fetch is missing before lockdown. This might be intended in offline-only mode.');
@@ -46,10 +46,12 @@ const initializeHandLandmarker = async (modelBuffer: ArrayBuffer) => {
   try {
     console.log('[Worker] Initializing HandLandmarker (Classic/Local)...');
     
-    // Use the LOCAL path for WASM files (served from public/mediapipe/wasm)
-    const vision = await FilesetResolver.forVisionTasks(
-        "/mediapipe/wasm" // Point to the directory containing the WASM files
-    );
+    // Use the WASM dir from the mediapipe base (Supabase Storage CDN when
+    // configured via VITE_MEDIAPIPE_BASE_URL, otherwise local public/mediapipe/wasm).
+    // The base URL is passed from the main thread (import.meta.env is unreliable
+    // inside classic workers in dev).
+    const wasmDir = mediaPipeBase ? `${mediaPipeBase}/wasm` : "/mediapipe/wasm";
+    const vision = await FilesetResolver.forVisionTasks(wasmDir);
     
     handLandmarker = await HandLandmarker.createFromOptions(vision, {
       baseOptions: {
@@ -87,7 +89,7 @@ let isProcessing = false;
 const MAX_RETRIES = 3;
 
 self.onmessage = async (event: MessageEvent) => {
-  const { type, videoFrame, timestamp, modelBuffer } = event.data;
+  const { type, videoFrame, timestamp, modelBuffer, mediaPipeBase } = event.data;
 
   if (type === 'LOAD') {
     if (!isInitialized) {
@@ -95,7 +97,7 @@ self.onmessage = async (event: MessageEvent) => {
         self.postMessage({ type: 'ERROR', error: 'Model buffer required' });
         return;
       }
-      await initializeHandLandmarker(modelBuffer);
+      await initializeHandLandmarker(modelBuffer, mediaPipeBase || '');
     }
   } 
   else if (type === 'DETECT') {

@@ -8,13 +8,19 @@ import { useGameState } from '../lib/useGameState';
 import { useInteraction } from '../lib/useInteraction';
 import { useAIWorker } from '../lib/useAIWorker';
 import { generateGameSummary, getGrandmasterMove, generateGeminiTaunt, logGameResult, generatePedagogicalCommentary, generatePedagogicalHint } from '../ai-service';
+
+const AI_SERVER_URL = import.meta.env.VITE_AI_MODE === 'server'
+  ? `${(import.meta.env.VITE_AI_SERVER_URL ?? 'http://localhost:5125').replace(/\/$/, '')}/ai-move`
+  : null;
 import { useInactivityLogout } from '../../auth/useInactivityLogout';
 import { useAuth } from '../../auth/useAuth';
 import { useHandInteraction } from '../../hand-tracking/lib/useHandInteraction';
 import { MediaPipeProvider } from '../../hand-tracking/lib/MediaPipeProvider';
+import { useCamera } from '../../hand-tracking/lib/useCamera';
 import { useBoardDimensions } from '../lib/useBoardDimensions';
 import { useBoardGeometry } from '../lib/useBoardGeometry';
 import { generateBoardSummary } from '../lib/useAICommentary'; // NEW: Spinal Cord AI Context
+import { mirrorPointId } from '../lib/mirrorBoard';
 import { Board } from './Board';
 import { GameSidebar } from './GameSidebar';
 import { DoublingCubeModal } from './DoublingCubeModal';
@@ -23,6 +29,8 @@ import { BettingStatusBar } from './BettingStatusBar';
 import { sfx, primeAudio } from '../lib/sound';
 import { CubeHistory } from './CubeHistory';
 import { BettingResultModal } from './BettingResultModal';
+import { DifficultySelectModal } from './DifficultySelectModal';
+import { getGameCalls, getTodayCalls, getDailyLimit, getGlobalTodayCalls, resetGameCalls, getGeminiUsageColor } from '../lib/geminiUsage';
 import { AiTauntBubble } from './AiTauntBubble';
 import { useWallet } from '../lib/useWallet';
 import { useCubeHistory } from '../lib/useCubeHistory';
@@ -35,14 +43,18 @@ import { KeyboardShortcutsModal } from '../../game-board/ui/KeyboardShortcutsMod
 import { VideoLayer } from '../../video-call/ui/VideoLayer';
 import { useVideoChat } from '../../networking/lib/useVideoChat'; // NEW
 import { SupabaseSignaling } from '../../networking/lib/SupabaseSignaling';
+import { VideoChat } from '../../networking/ui/VideoChat';
+import { ChatPanel } from '../../networking/ui/ChatPanel';
+import { useChat } from '../../networking/lib/useChat';
 import { logTelemetry } from '../../../shared/lib/telemetry';
 import { isFeatureEnabled } from '../../../shared/lib/featureFlags';
 import { applyMove, getAvailableDice, isValidMove } from '../../../entities/game/rules';
 import { DiceButton } from '../../../shared/ui/DiceButton/DiceButton';
 import { supabase } from '../../../shared/api/supabase'; // NEW: Added import
 
-import { mirrorPointId } from '../lib/mirrorBoard';
 import { rollDice } from '../../../entities/game/utils';
+import { ReplayDownloader } from './ReplayDownloader';
+
 
 // Types
 import type { Move } from '../../../entities/game/types';
@@ -109,12 +121,16 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
   // Initialize Video Chat (Moved up to prevent TDZ errors)
   const { 
+    localStream,
     remoteStream, 
     metrics,
     handleSignal, 
     sendData, 
     connectionStatus, 
-    startCall 
+    startCall,
+    toggleAudio,
+    toggleVideo,
+    hangUp
   } = useVideoChat({
       roomId: initialRoomId || 'prototype-room',
       userId: user?.id || 'local-user', 
@@ -122,10 +138,16 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       enabled: isCrystalEnabled
   });
 
-  // H2H AUTOMATION: Auto-trigger startCall for the Sender (White)
+  // H2H TEXT CHAT: in-memory messages over the shared WebRTC data channel.
+  const chat = useChat({
+    sendData,
+    enabled: initialMode === 'human'
+  });
+
+  // H2H AUTOMATION: Auto-trigger startCall for either peer in human mode
   useEffect(() => {
-      if (initialMode === 'human' && myColor === 'white' && connectionStatus === 'new' && signalingChannel) {
-          console.log('[GameBoard] H2H Automation: Identifying as Sender, initiating WebRTC call in 2s...');
+      if (initialMode === 'human' && connectionStatus === 'new' && signalingChannel) {
+          console.log('[GameBoard] H2H Automation: initiating WebRTC call in 2s...');
           const timer = setTimeout(() => {
               if (connectionStatus === 'new' && startCall) {
                   startCall();
@@ -133,7 +155,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
           }, 2000);
           return () => clearTimeout(timer);
       }
-  }, [initialMode, myColor, connectionStatus, signalingChannel, startCall]);
+  }, [initialMode, connectionStatus, signalingChannel, startCall]);
 
   // Sync Ref with State
   useEffect(() => {
@@ -142,7 +164,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   
   const { state, dispatch, isPending } = useGameState();
   const [, startTransition] = useTransition();
-  const isVsComputer = initialMode === 'ai';
+  const isVsComputer = initialMode === 'ai' || initialMode === 'training';
   
   // AI Worker for persistence & learning
   const { recordMove, notifyGameEnd } = useAIWorker(() => {
@@ -178,7 +200,12 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   // AI Taunt Bubble State
   const [tauntMessage, setTauntMessage] = useState('');
   // AI difficulty (1 = básico, 10 = experto). Fed to getGrandmasterMove.
-  const [aiDifficulty, setAiDifficulty] = useState<number>(5);
+  const [aiDifficulty, setAiDifficulty] = useState<number>(() => {
+    const saved = localStorage.getItem('vivo_ai_difficulty');
+    return saved ? parseInt(saved, 10) : 5;
+  });
+  // Difficulty selection popup: shown once per game entry (only vs AI).
+  const [showDifficultyModal, setShowDifficultyModal] = useState<boolean>(() => initialMode === 'ai' || initialMode === 'training');
   const [showTaunt, setShowTaunt] = useState(false);
   const [isHintLoading, setIsHintLoading] = useState(false);
   
@@ -193,6 +220,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     const saved = localStorage.getItem('vivo_gemini_taunts_enabled');
     return saved !== null ? saved === 'true' : true; // ENABLED BY DEFAULT
   });
+
+  // Global Gemini calls today (server-side counter, shared by all players).
+  // null until fetched at game end; falls back to the local tally while loading.
+  const [globalGeminiCalls, setGlobalGeminiCalls] = useState<number | null>(null);
 
   // Training Mode (Equity Bar visibility) setting
   const [trainingModeEnabled] = useState(() => {
@@ -209,7 +240,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   // - AI matches:
   //    - Anonymous: ALWAYS ON
   //    - Registered: Based on user preference
-  const isTrainingModeActive = initialMode === 'ai' ? trainingModeEnabled : false;
+  const isTrainingModeActive = initialMode === 'training' || (initialMode === 'ai' && trainingModeEnabled);
   
 
   // Wallet and Cube History Hooks
@@ -267,6 +298,23 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   useEffect(() => { stateHistoryLenRef.current = state.history.length; }, [state.history.length]);
   useEffect(() => { stateRef.current = state; }, [state]);
 
+  // At game end, fetch the real shared daily Gemini consumption so "quedan"
+  // reflects the true remaining quota across all players.
+  useEffect(() => {
+    if (!state.winner) return;
+    let cancelled = false;
+    getGlobalTodayCalls().then((calls) => {
+      if (!cancelled) setGlobalGeminiCalls(calls);
+    });
+    return () => { cancelled = true; };
+  }, [state.winner]);
+
+  // Persist AI difficulty so the popup choice + manual slider changes survive
+  // the session and are reflected in the OctagonMenu launcher.
+  useEffect(() => {
+    localStorage.setItem('vivo_ai_difficulty', aiDifficulty.toString());
+  }, [aiDifficulty]);
+
   // Fetch opponent's real wallet balance when we know who the opponent is
   useEffect(() => {
     if (initialMode !== 'human' || !user?.id || !matchPlayers.white || !matchPlayers.black) return;
@@ -309,7 +357,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   // Reserve initial stake when match starts (guarded: only once, only if balance allows)
   useEffect(() => {
     if (!user?.id || hasReservedStake.current) return;
-    
+
+    // Training mode is free: no stake reservation, no balance requirement.
+    if (initialMode === 'training') return;
+
     // In Human mode, we need room and players resolved. 
     // In AI mode, we don't need them to start reserving.
     if (initialMode === 'human' && (!initialRoomId || !matchPlayers.white || !matchPlayers.black)) return;
@@ -494,28 +545,18 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     console.log('[GameBoard] Processing abandonment. Winner:', winnerId, 'Loser:', abandonerId);
     
     try {
-      // 0. Resolve Match UUID (RPC and DB updates need UUID, not room_id string)
-      // FIX: Check if initialRoomId is a valid UUID before querying to avoid 400 error
-      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(initialRoomId);
-      
-      let matchUUID = null;
-      if (isUUID) {
-        const { data: matchRow } = await supabase
-          .from('matches')
-          .select('id')
-          .eq('room_id', initialRoomId)
-          .maybeSingle();
-        matchUUID = matchRow?.id;
-      }
+      // 0. Resolve Match UUID (RPC and DB updates need the uuid column `matches.id`,
+      // not the TEXT room_id). room_id is TEXT, so .eq() is safe for both UUID and
+      // 'match_...' invitation ids.
+      const { data: matchRow } = await supabase
+        .from('matches')
+        .select('id')
+        .eq('room_id', initialRoomId)
+        .maybeSingle();
+      const matchUUID = matchRow?.id;
 
-      if (!matchUUID && isUUID) {
-          console.error('[GameBoard] Abandonment failed: No match UUID found for room', initialRoomId);
-          return;
-      }
-
-      // If not a UUID (like match_...), we skip the DB/RPC updates but still navigate away
-      if (!isUUID) {
-        console.log('[GameBoard] Generic room ID detected, skipping match row updates');
+      if (!matchUUID) {
+        console.warn('[GameBoard] No match row found for room_id — settlement skipped, leaving room:', initialRoomId);
         navigate('/dashboard');
         return;
       }
@@ -597,7 +638,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   // The abandonment protocol is only triggered when the user clicks the explicit button.
   
   useEffect(() => {
-    if (initialMode === 'ai') {
+    if (initialMode === 'ai' || initialMode === 'training') {
         const savedColor = localStorage.getItem('selected_team') as 'white' | 'black' | null;
         const color = savedColor || 'white';
         setMyColor(color); // Use saved color preference in AI mode
@@ -705,6 +746,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     const saved = localStorage.getItem('vivo_hand_tracking_enabled');
     return saved === 'true';
   });
+  const { stopCamera, startCamera } = useCamera();
 
   // Camera permission explainer (E / AR-UX): shown BEFORE the camera starts,
   // so the user explicitly allows it. Never auto-starts the camera.
@@ -723,7 +765,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       const savedHandTracking = localStorage.getItem('vivo_hand_tracking_enabled');
       if (savedHandTracking !== null) setIsHandTracking(savedHandTracking === 'true');
       
-      if (initialMode === 'ai') {
+      if (initialMode === 'ai' || initialMode === 'training') {
         const savedColor = localStorage.getItem('selected_team') as 'white' | 'black' | null;
         if (savedColor) {
            setMyColor(savedColor);
@@ -761,6 +803,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     fromX: number; fromY: number; toX: number; toY: number;
     color: 'white' | 'black';
     toPointId: number;
+    fromPointId: number;
   } | null>(null);
   
   // NEW: Root Container Dimensions for Hand Tracking (Full Screen / Layout Aware)
@@ -844,7 +887,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
   // NEW: Broadcast Game State (Dice, Moves, etc.)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const broadcastGameUpdate = useCallback(async (type: 'ROLL_DICE' | 'MOVE_CHECKER' | 'NEW_GAME' | 'UNDO_MOVE' | 'OFFER_DOUBLE' | 'TAKE_DOUBLE' | 'DROP_DOUBLE' | 'CONFIRM_TURN_END', payload?: any) => {
+  const broadcastGameUpdate = useCallback(async (type: 'ROLL_DICE' | 'SYNC_DICE' | 'MOVE_CHECKER' | 'NEW_GAME' | 'UNDO_MOVE' | 'OFFER_DOUBLE' | 'TAKE_DOUBLE' | 'DROP_DOUBLE' | 'CONFIRM_TURN_END', payload?: any) => {
     // Allow broadcasting in 'human' mode even if Crystal is disabled
     if (initialMode !== 'human' && !isCrystalEnabled) return;
 
@@ -941,6 +984,14 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
         if (data.type === 'GAME_UPDATE') {
             console.log('[GameSync] Received Remote Update:', data.event);
 
+            const normalizedEvent = data.event === 'ROLL_DICE' && data.payload?.dice
+              ? 'SYNC_DICE'
+              : data.event;
+
+            const normalizedPayload = normalizedEvent === 'SYNC_DICE'
+              ? { dice: data.payload.dice }
+              : data.payload;
+
             // Read stable refs for the latest values — no stale closure risk
             const currentMyColor = myColorRef.current;
             const currentTurn = stateTurnRef.current;
@@ -949,26 +1000,21 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
             // ─── Security / Turn Guard ────────────────────────────────────────
             // MOVE_CHECKER from remote is only valid when it is NOT our turn.
-            // ROLL_DICE from remote is always valid - the opponent starting their
-            // turn sends this AFTER CONFIRM_TURN_END switched state.turn, but due
-            // to async useActionState there can be a brief window where stateTurnRef
-            // still shows our color. We must NOT block ROLL_DICE on this basis.
+            // SYNC_DICE from remote is allowed even if refs briefly lag.
             // Hand-tracking moves go through onDrop → broadcastGameUpdate('MOVE_CHECKER')
             // and are governed by the same guard.
-            const isDoublingEvent = ['OFFER_DOUBLE', 'TAKE_DOUBLE', 'DROP_DOUBLE'].includes(data.event);
-            const isMoveEvent = data.event === 'MOVE_CHECKER';
+            const isDoublingEvent = ['OFFER_DOUBLE', 'TAKE_DOUBLE', 'DROP_DOUBLE'].includes(normalizedEvent);
+            const isMoveEvent = normalizedEvent === 'MOVE_CHECKER';
 
-            console.log(`[Sync ← Receiver] Processing ${data.event} from remote. Turn: ${currentTurn}, MyColor: ${currentMyColor}`);
+            console.log(`[Sync ← Receiver] Processing ${normalizedEvent} from remote. Turn: ${currentTurn}, MyColor: ${currentMyColor}`);
 
-            // Only block MOVE_CHECKER if we are certain it is still our own turn
-            // (ROLL_DICE is always allowed from remote — it starts the opponent's turn)
             if (!currentWinner && currentMyColor && currentTurn === currentMyColor && isMoveEvent && !isDoublingEvent) {
-                console.warn(`[Sync ← Security] Ignored remote ${data.event} during MY turn. (Turn: ${currentTurn}, LocalColor: ${currentMyColor})`);
+                console.warn(`[Sync ← Security] Ignored remote ${normalizedEvent} during MY turn. (Turn: ${currentTurn}, LocalColor: ${currentMyColor})`);
                 return;
             }
 
             // Guard for UNDO: only apply if there is history to undo
-            if (data.event === 'UNDO_MOVE') {
+            if (normalizedEvent === 'UNDO_MOVE') {
                 if (currentHistoryLen === 0) {
                     console.warn('[Sync Error] Ignored remote UNDO_MOVE: No history to undo.');
                     return;
@@ -977,15 +1023,16 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
             startTransition(() => {
                 try {
-                    dispatch({ type: data.event, ...data.payload });
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    dispatch({ type: normalizedEvent, ...normalizedPayload } as any);
                 } catch (error) {
-                    console.error(`[Critical] Failed to apply remote update '${data.event}':`, error);
+                    console.error(`[Critical] Failed to apply remote update '${normalizedEvent}':`, error);
                 }
             });
 
             // Auto-open doubling modal for the RECEIVING player when opponent offers a double.
             // Guard: only open if it is NOT my own turn (i.e. the offer came from the other side).
-            if (data.event === 'OFFER_DOUBLE' && currentMyColor && currentTurn === currentMyColor) {
+            if (normalizedEvent === 'OFFER_DOUBLE' && currentMyColor && currentTurn === currentMyColor) {
                 // currentTurn is still MY color → I am the one being offered the double
                 setShowDoublingModal(true);
             }
@@ -1009,43 +1056,42 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   );
 
   const onDrop = useCallback((move: Move) => {
+    // ── STEP 1: Capture geometry & launch animation overlay SYNCHRONOUSLY ──
+    // This MUST happen before startTransition / addOptimisticMove so that the
+    // geometry snapshot refers to the PRE-MOVE board positions.
+    const geom = geometry;
+    const visualFrom = mirrorPointId(move.from, myColorRef.current);
+    const visualTo = mirrorPointId(move.to, myColorRef.current);
+    const fromGeom = geom[visualFrom];
+    const toGeom = geom[visualTo];
+
+    if (fromGeom && toGeom) {
+      const color: 'white' | 'black' =
+        (stateRef.current.turn === 'white') ? 'white' : 'black';
+
+      setAnimatingChecker({
+        fromX: fromGeom.cx,
+        fromY: fromGeom.cy,
+        toX: toGeom.cx,
+        toY: toGeom.cy,
+        color,
+        toPointId: visualTo,
+        fromPointId: visualFrom,
+      });
+    }
+
+    // ── STEP 2: Apply the move (optimistic update + real dispatch) ──
     startTransition(async () => {
       addOptimisticMove(move);
       await dispatch({ type: 'MOVE_CHECKER', move });
 
-      // ANIMATION: fly a ghost checker from origin to destination.
-      // Capture geometry BEFORE the board re-renders at the new positions.
-      const geom = geometry;
-      const fromGeom = geom[move.from];
-      const toGeom = geom[move.to];
+      // Clear the flying overlay once animation completes (matches 350ms duration + buffer)
       if (fromGeom && toGeom) {
-        const color: 'white' | 'black' =
-          (stateRef.current.turn === 'white') ? 'white' : 'black';
-
-        const fromX = fromGeom.cx;
-        const fromY = fromGeom.cy;
-        const toX = toGeom.cx;
-        const toY = toGeom.cy;
-
-        setAnimatingChecker({
-          fromX,
-          fromY,
-          toX,
-          toY,
-          color,
-          toPointId: move.to,
-        });
-        window.setTimeout(() => setAnimatingChecker(null), 420);
+        window.setTimeout(() => setAnimatingChecker(null), 400);
       }
 
-      // Record move for AI learning
       recordMove(stateRef.current, move);
-
-      // Broadcast Move — use Ref so hand-tracking gesture effect
-      // always has access to the latest broadcaster without re-registering.
       broadcastGameUpdateRef.current('MOVE_CHECKER', { move });
-
-      // SOUND: checker movement blip
       sfx.move();
     });
   }, [addOptimisticMove, dispatch, recordMove, geometry]); // state intentionally omitted, reading via Ref for stability
@@ -1065,13 +1111,35 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       aiLockRef.current = true;
       setIsThinking(true);
       
-      // AI is thinking - show taunt
-      console.log("🤖 [DEBUG] Calling triggerTaunt('thinking') at line 572...");
-      triggerTaunt('thinking');
+      // AI is thinking - show taunt (skipped at 9-10 to save Gemini quota:
+      // at that level the AI already plays from local skills/expectimax).
+      if (aiDifficulty < 9) {
+        console.log("🤖 [DEBUG] Calling triggerTaunt('thinking') at line 572...");
+        triggerTaunt('thinking');
+      }
       
       try {
           console.log("🤖 AI Thinking... (Locked)");
-          const aiResponse = await getGrandmasterMove(currentBoard, currentDice, currentState, aiDifficulty);
+
+          const serverUrl = AI_SERVER_URL;
+          let aiResponse;
+
+          if (serverUrl) {
+            const aiServerResponse = await fetch(serverUrl, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ board: currentBoard, dice: currentDice, difficulty: aiDifficulty, turn: currentState.turn, usedDice: currentState.usedDice })
+            });
+
+            if (!aiServerResponse.ok) {
+              throw new Error(`AI server responded with ${aiServerResponse.status}`);
+            }
+
+            const data = await aiServerResponse.json();
+            aiResponse = { moves: Array.isArray(data.moves) ? data.moves : [] };
+          } else {
+            aiResponse = await getGrandmasterMove(currentBoard, currentDice, currentState, aiDifficulty);
+          }
           
           if (aiResponse && aiResponse.moves && aiResponse.moves.length > 0) {
               console.log("🤖 AI Playing:", aiResponse.moves);
@@ -1119,7 +1187,9 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
               }
 
               // ─── CEREBRO PEDAGÓGICO (El Profesor Mágico) ───
-              if (geminiTauntsEnabled) {
+              // Skipped at difficulty 9-10 to conserve Gemini quota: the move
+              // itself is already chosen by local skills + expectimax.
+              if (geminiTauntsEnabled && aiDifficulty < 9) {
                   const currentWallet = wallet?.saldo_actual ?? 500;
                   generatePedagogicalCommentary(
                     aiResponse.moves,
@@ -1165,7 +1235,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
               aiLockRef.current = false;
           }, 2000);
       }
-  }, [isThinking, onDrop, dispatch, triggerTaunt, geminiTauntsEnabled, wallet?.saldo_actual, myColor]);
+  }, [isThinking, onDrop, dispatch, triggerTaunt, geminiTauntsEnabled, wallet?.saldo_actual, myColor, aiDifficulty]);
 
   // MODO PISTA: Solicitud de ayuda manual al Profesor Mágico
   const handleRequestHint = useCallback(async () => {
@@ -1551,14 +1621,8 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       
       // Process match result in Supabase (update wallets, create transactions)
       if (initialRoomId && matchPlayers.white && matchPlayers.black) {
-        // Guard: only query matches if room_id looks like a real UUID.
-        // room_id values like 'match_1771847267632_cf8m1gv' are NOT UUIDs and
-        // cause a 22P02 / 400 error from PostgREST when passed to a uuid column.
-        const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (!UUID_REGEX.test(initialRoomId)) {
-          console.info('[GameBoard] room_id is not a UUID — skipping matches update after game end:', initialRoomId);
-        } else
-        // First, get match_id from room_id
+        // First, get match_id from room_id.
+        // room_id is TEXT, so .eq() is safe for both UUID and 'match_...' invitation ids.
         supabase
           .from('matches')
           .select('id')
@@ -1669,8 +1733,9 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             console.error("Epic taunt generation failed", err);
           });
         
-        // Only process wallet/transactions if user is logged in
-        if (user?.id) {
+        // Only process wallet/transactions if user is logged in AND this is not
+        // a training game (training mode is free — no points move).
+        if (user?.id && initialMode !== 'training') {
           supabase
             .rpc('process_ai_match', { p_amount: pointsAtStake, p_user_won: userWon, p_user_id: user.id })
             .then(async ({ error }) => {
@@ -1706,7 +1771,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
         );
       }
     }
-  }, [state.winner, state.cube, state.board, user, matchPlayers.white, matchPlayers.black, notifyGameEnd, initialRoomId, matchPlayers, stakeInicial, syncToCRM, isVsComputer, wallet, triggerTaunt, state.game_id, myColor, computerPlayer]);
+  }, [state.winner, state.cube, state.board, user, matchPlayers.white, matchPlayers.black, notifyGameEnd, initialRoomId, matchPlayers, stakeInicial, syncToCRM, isVsComputer, wallet, triggerTaunt, state.game_id, myColor, computerPlayer, initialMode]);
   
   // RESET SAVE FLAG ON NEW GAME
   useEffect(() => {
@@ -1738,14 +1803,12 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     startTransition(() => {
       console.log('[GameBoard] handleRollDice triggered. Turn Active?', isTurnActive);
       
+      // H2H: generate locally but broadcast as SYNC_DICE so both sides use the same dice.
       const dice = rollDice();
       console.log('[GameBoard] Rolling Dice:', dice);
 
-      // 2. Dispatch Local
       dispatch({ type: 'ROLL_DICE', dice });
-      
-      // 3. Broadcast Network
-      broadcastGameUpdate('ROLL_DICE', { dice });
+      broadcastGameUpdate('SYNC_DICE', { dice });
     });
 
     // SOUND: dice roll rattle (best-effort; gated on vivo_sound_enabled)
@@ -1767,6 +1830,9 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   const handleNewGame = useCallback(() => {
     // Allow the next game to be counted in the session tally again.
     gameEndCountedRef.current = false;
+    // Reset the per-game Gemini call counter for the new match.
+    resetGameCalls();
+    setGlobalGeminiCalls(null);
     // 1. Clear the stake reservation so the new game starts fresh
     if (user?.id) {
       const storageKey = initialRoomId 
@@ -2107,10 +2173,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       )}
 
       {initialMode === 'human' && !isOpponentPresent && connectionStatus !== 'connected' && !state.winner && !opponentAbandoned && !insufficientFunds && (
-        <div className="absolute inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none">
+        <div className="absolute inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           {hasGameStarted ? (
             // Mid-game disconnect — opponent WAS here but left
-            <div className="bg-panel border border-amber-500/30 p-8 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(245,158,11,0.2)] pointer-events-auto">
+            <div className="bg-panel border border-amber-500/30 p-8 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(245,158,11,0.2)]">
               <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 text-amber-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
               </div>
@@ -2124,15 +2190,41 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             </div>
           ) : (
             // Initial join — opponent hasn't arrived yet
-            <div className="bg-panel border border-emerald-500/30 p-8 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(16,185,129,0.2)] animate-pulse pointer-events-auto">
+            <div className="bg-panel border border-emerald-500/30 p-6 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(16,185,129,0.2)]">
               <div className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-6"></div>
               <h2 className="text-2xl font-bold text-white mb-2 font-display">Esperando a tu oponente...</h2>
-              <p className="text-emerald-400/80">
+              <p className="text-emerald-400/80 mb-4">
                 La partida comenzará automáticamente cuando tu oponente se conecte a la sala.
               </p>
             </div>
           )}
         </div>
+      )}
+
+      {/* Crystal Window call controls — persistente durante TODA la partida,
+          no solo en el lobby, para que ambos humanos se vean en vivo */}
+      {isCrystalEnabled && (
+        <VideoChat
+          localStream={localStream}
+          remoteStream={remoteStream}
+          connectionStatus={connectionStatus}
+          startCall={startCall}
+          toggleAudio={toggleAudio}
+          toggleVideo={toggleVideo}
+          hangUp={hangUp}
+          disabled={!isCrystalEnabled}
+        />
+      )}
+
+      {/* H2H text chat overlay (persistente durante la partida) */}
+      {initialMode === 'human' && (
+        <ChatPanel
+          messages={chat.messages}
+          isOpen={chat.isOpen}
+          onToggle={chat.toggleChat}
+          onSend={chat.sendChat}
+          connectionStatus={connectionStatus}
+        />
       )}
 
       {showCalibration && (
@@ -2186,8 +2278,8 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             isHandActive={isHandActive}
             showVideo={true}
             showOverlay={false} 
-            isActive={true} 
-            onPermissionDenied={() => setCameraPermState('denied')}
+            isActive={true}
+            mirrored={true}
           />
         </div>
       )}
@@ -2208,7 +2300,8 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                     showVideo={true} 
                     showOverlay={false}
                     isActive={true}
-                    onPermissionDenied={() => setCameraPermState('denied')}
+                    mirrored={true}
+                    useSharedCamera={true}
                 />
              </div>
              {/* Ghost Hand Layer (Receives Data) */}
@@ -2226,6 +2319,8 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             onToggleHandTracking={() => {
               if (isHandTracking) {
                 setIsHandTracking(false);
+                stopCamera();
+                setCameraPermState(null);
               } else {
                 // E / AR-UX: show the explainer BEFORE starting the camera.
                 setCameraPermState('explain');
@@ -2249,7 +2344,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             sessionLosses={sessionGamesLost}
             aiDifficulty={aiDifficulty}
             onSetAiDifficulty={setAiDifficulty}
-            />
+          />
         </div>
       </aside>
 
@@ -2261,6 +2356,8 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             onToggleHandTracking={() => {
               if (isHandTracking) {
                 setIsHandTracking(false);
+                stopCamera();
+                setCameraPermState(null);
               } else {
                 // E / AR-UX: show the explainer BEFORE starting the camera.
                 setCameraPermState('explain');
@@ -2612,13 +2709,24 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             </div>
           )}
 
+          {/* Difficulty Selector Popup - shown on entry when playing vs AI */}
+          <DifficultySelectModal
+            isOpen={showDifficultyModal}
+            currentDifficulty={aiDifficulty}
+            onSelect={(difficulty) => {
+              setAiDifficulty(difficulty);
+              setShowDifficultyModal(false);
+            }}
+            onClose={() => setShowDifficultyModal(false)}
+          />
+
           {/* Victory Modal - Betting Result - Only if authenticated */}
           {state.winner && user && (
             <BettingResultModal
               isOpen={!!state.winner}
               winner={state.winner}
               myColor={myColor || (user ? 'white' : null)}
-              stakeInicial={stakeInicial}
+              stakeInicial={initialMode === 'training' ? 0 : stakeInicial}
               cubeFinal={state.cube}
               winMethod={(() => {
                 const loser = state.winner === 'white' ? 'black' : 'white';
@@ -2644,12 +2752,15 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                 }
                 return 'normal';
               })()}
-              totalGanado={stakeInicial * state.cube * (state.winner === 'white' ? 
+              totalGanado={(initialMode === 'training' ? 0 : stakeInicial) * state.cube * (state.winner === 'white' ? 
                 (state.board[29] === -15 ? ((state.board[27] ?? 0) < 0 || Array.from({length: 6}, (_, i) => state.board[19 + i] ?? 0).some(v => v < 0) ? 3 : 2) : 1) :
                 (state.board[28] === 15 ? ((state.board[26] ?? 0) > 0 || Array.from({length: 6}, (_, i) => state.board[1 + i] ?? 0).some(v => v > 0) ? 3 : 2) : 1)
               )}
               onPlayAgain={handleNewGame}
               onExit={() => handleExitGame('/')}
+              geminiCallsToday={globalGeminiCalls ?? getTodayCalls()}
+              geminiCallsGame={getGameCalls()}
+              geminiDailyLimit={getDailyLimit()}
             />
           )}
 
@@ -2667,6 +2778,12 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                   {state.winner === 'white' 
                     ? '¡Has vencido al Gran Maestro! Inicia sesión para guardar tu progreso y ganar puntos.'
                     : 'El Gran Maestro gana esta vez. Inicia sesión para seguir mejorando.'}
+                </p>
+                <p className={`text-[11px] font-mono mb-1 ${getGeminiUsageColor(globalGeminiCalls ?? getTodayCalls())}`}>
+                  ✨ Gemini · esta partida: {getGameCalls()} · hoy: {globalGeminiCalls ?? getTodayCalls()} / {getDailyLimit()} · quedan {Math.max(0, getDailyLimit() - (globalGeminiCalls ?? getTodayCalls()))}
+                </p>
+                <p className="text-[10px] text-cyan-200/70 font-medium mb-4">
+                  Tokens FREE GRATIS · al agotarse hoy, la IA ya no puede pensar con claridad.
                 </p>
                 <div className="flex gap-3 justify-center">
                   <button
@@ -2781,7 +2898,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                showVideo={false} // Hide Video Here
                showOverlay={true} // Show Cursor Here
                isActive={isTurnActive} // Only show overlay when actively playing
-               onPermissionDenied={() => setCameraPermState('denied')}
+               mirrored={true}
              />
           </div>
       )}
@@ -2793,17 +2910,24 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
         onAllow={() => {
           setCameraPermState(null);
           setIsHandTracking(true);
+          startCamera().catch(console.error);
         }}
-        onCancel={() => setCameraPermState(null)}
+        onCancel={() => {
+          setCameraPermState(null);
+          setIsHandTracking(false);
+          stopCamera();
+        }}
         onRetry={() => {
           setCameraPermState(null);
           setIsHandTracking(true);
+          startCamera().catch(console.error);
         }}
       />
 
       {/* First-run instructions tutorial */}
       <FirstRunTutorial isOpen={showTutorial} onClose={() => setShowTutorial(false)} />
       <KeyboardShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
+      <ReplayDownloader />
     </div>
-  );
+  )
 }

@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { MediaPipeContext } from "./MediaPipeContext";
+import { POWER_PROFILE } from "../../../shared/lib/device";
 
 
 export function MediaPipeProvider({ children }: { children: ReactNode }) {
@@ -30,6 +31,7 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const requestRef = useRef<number | null>(null);
   const lastDetectionRef = useRef<number>(0);
+  const lastHandSeenAtRef = useRef<number>(0); // Adaptive idle mode
   const loopRef = useRef<() => void>(() => {});
   const isWorkerProcessing = useRef(false);
 
@@ -54,6 +56,11 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
         startTransition(() => {
           setLandmarks(result as HandLandmarkerResult);
         });
+        // Adaptive throttle: record when a hand was last seen so the loop can
+        // drop to idle cadence when nobody's hand is in the camera.
+        if (result && result.landmarks && result.landmarks.length > 0) {
+          lastHandSeenAtRef.current = performance.now();
+        }
       } else if (type === 'ERROR') {
         isWorkerProcessing.current = false; // Mark as free even on error
         setError(workerError);
@@ -65,7 +72,8 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
     const initWorker = async () => {
      // Use local model file for offline support and security control
     try {
-    const modelUrl = "/mediapipe/hand_landmarker.task";
+    const mediaPipeBase = (import.meta.env.VITE_MEDIAPIPE_BASE_URL as string) || "";
+    const modelUrl = mediaPipeBase ? `${mediaPipeBase}/hand_landmarker.task` : "/mediapipe/hand_landmarker.task";
             const response = await fetch(modelUrl);
             if (!response.ok) throw new Error('Failed to fetch model');
             const buffer = await response.arrayBuffer();
@@ -88,7 +96,7 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
             }
             
             // Transfer buffer to worker
-            worker.postMessage({ type: 'LOAD', modelBuffer: buffer }, [buffer]);
+            worker.postMessage({ type: 'LOAD', modelBuffer: buffer, mediaPipeBase }, [buffer]);
         } catch (err) {
             setError('Failed to load MediaPipe model: ' + err);
         }
@@ -113,16 +121,23 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
       video.videoHeight === 0 ||
       video.readyState < 2
     ) {
-      requestRef.current = requestAnimationFrame(() => loopRef.current());
+      // Sin feed activo: poll tranquilo con setTimeout (ahorra batería/CPU
+      // cuando la cámara está apagada) en vez de rAF a 60fps.
+      requestRef.current = window.setTimeout(() => loopRef.current(), 200);
       return;
     }
 
-    // Throttle: 30 FPS cap (33ms) to save battery and CPU
+    // ADAPTIVE THROTTLE: si no hay mano detectada recientemente bajamos la
+    // cadencia a modo idle (evita CPU/GPU al máximo y sobrecalentamiento).
     const now = performance.now();
+    const idle = now - lastHandSeenAtRef.current > POWER_PROFILE.idleAfterMs;
+    const interval = idle
+      ? POWER_PROFILE.idleIntervalMs()
+      : POWER_PROFILE.activeIntervalMs();
     const elapsed = now - lastDetectionRef.current;
-    if (elapsed < 33) {
+    if (elapsed < interval) {
        requestRef.current = requestAnimationFrame(() => loopRef.current());
-       return;  
+       return;
     }
 
     lastDetectionRef.current = now;
@@ -135,6 +150,14 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
       setVideoDimensions(newDims);
     }
 
+    // FRAME DOWNSCALE: en móvil se envía media resolución a MediaPipe (el
+    // landmarker devuelve coordenadas normalizadas, así que el mapeo a
+    // pantalla no cambia). El coste de inferencia baja ~4x.
+    const scale = POWER_PROFILE.frameScale();
+    const targetW = Math.max(1, Math.round(video.videoWidth * scale));
+    const targetH = Math.max(1, Math.round(video.videoHeight * scale));
+    const shouldResize = targetW !== video.videoWidth || targetH !== video.videoHeight;
+
     // Capture Frame
     // P0: Use ImageBitmap to avoid serializing heavy blobs and transfer ownership
     // Fallback for strict browsers or older iOS (Device Compatibility)
@@ -142,7 +165,10 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
         if (!isWorkerProcessing.current) { // BACKPRESSURE CONTROL
             if (typeof createImageBitmap !== 'undefined') {
                 isWorkerProcessing.current = true;
-                createImageBitmap(video).then(bitmap => {
+                const opts: ImageBitmapOptions = shouldResize
+                  ? { resizeWidth: targetW, resizeHeight: targetH, resizeQuality: 'low' }
+                  : {};
+                createImageBitmap(video, opts).then(bitmap => {
                     worker.postMessage({ 
                         type: 'DETECT', 
                         videoFrame: bitmap, 
@@ -160,14 +186,14 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
                 }
                 const canvas = canvasRef.current;
                   
-                if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
+                if (canvas.width !== targetW || canvas.height !== targetH) {
+                    canvas.width = targetW;
+                    canvas.height = targetH;
                 }
                  
                 const ctx = canvas.getContext('2d', { willReadFrequently: true });
                 if (ctx) {
-                    ctx.drawImage(video, 0, 0);
+                    ctx.drawImage(video, 0, 0, targetW, targetH);
                     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     
                     isWorkerProcessing.current = true;
@@ -195,6 +221,7 @@ export function MediaPipeProvider({ children }: { children: ReactNode }) {
   const stopDetection = useCallback(() => {
     if (requestRef.current != null) {
       cancelAnimationFrame(requestRef.current);
+      clearTimeout(requestRef.current);
       requestRef.current = null;
     }
     videoRef.current = null;

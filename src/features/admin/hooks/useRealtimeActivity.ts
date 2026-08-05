@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../../shared/api/supabase';
+import { isRecentlyActive } from '../../../shared/lib/presence';
 
 export interface PlayerActivity {
   id: string;
@@ -53,15 +54,15 @@ export function useRealtimeActivity() {
 
       if (data) {
         const now = new Date().getTime();
-        const ONLINE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
 
         setPlayers(
           data.map(p => ({
             id: p.id,
             username: p.username || 'Anonymous',
-            isOnline: 
-              p.status === 'online' || 
-              (p.last_seen && (now - new Date(p.last_seen).getTime() < ONLINE_THRESHOLD)),
+            // Online = heartbeat recency ONLY. The `status` column is sticky
+            // (never reset offline on mobile/crash) → ignoring it here prevents
+            // permanent false "online" states.
+            isOnline: isRecentlyActive(p.last_seen, now),
             lastSeen: p.last_seen || new Date().toISOString(),
             currentGame: null, // TODO: Implement active games tracking
             role: p.role

@@ -9,6 +9,8 @@ interface VideoChatProps {
   toggleAudio?: (enabled: boolean) => void;
   toggleVideo?: (enabled: boolean) => void;
   stopAllTracks?: () => void;
+  hangUp?: () => void;
+  disabled?: boolean;
 }
 
 export function VideoChat({ 
@@ -18,12 +20,16 @@ export function VideoChat({
   startCall,
   toggleAudio,
   toggleVideo,
-  stopAllTracks
+  stopAllTracks,
+  hangUp,
+  disabled = false
 }: VideoChatProps) {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+
+  const isInCall = connectionStatus === 'connected' || connectionStatus === 'connecting';
 
   // Attach streams to video elements
   useEffect(() => {
@@ -55,16 +61,19 @@ export function VideoChat({
       // Optional: Visual confirmation or state update
   };
   
+  if (disabled) {
+      return null;
+  }
+
   if (!localStream && connectionStatus === 'new') {
       // Show start button or "Camera Access" state
       // This handles the "Revoked" state too (localStream becomes null)
       return (
-          <div className="fixed bottom-4 right-4 z-50">
-             <button onClick={startCall} className="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-full font-bold shadow-lg transition-all flex items-center gap-2">
-                <Video size={20} />
-                <span>Iniciar Video</span>
-             </button>
-          </div>
+        <div className="fixed bottom-4 right-4 z-50 w-48 h-36 rounded-xl bg-black/80 border border-white/10 flex items-center justify-center p-3 text-center">
+          <span className="text-[10px] uppercase font-bold text-white/50 tracking-widest leading-tight">
+            Esperando sala...
+          </span>
+        </div>
       );
   }
 
@@ -124,10 +133,11 @@ export function VideoChat({
         </button>
         
         <button 
-          onClick={startCall} // Or Hangup if connected? 
+          onClick={isInCall ? () => hangUp?.() : startCall} // Colgar si en llamada, si no llamar
+          title={isInCall ? 'Colgar llamada (la partida sigue)' : 'Llamar'}
           className={`
             w-8 h-8 rounded-full flex items-center justify-center transition-all
-            ${connectionStatus === 'connected' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}
+            ${isInCall ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}
           `}
         >
           <Phone size={14} className="text-white fill-current" />

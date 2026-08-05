@@ -374,7 +374,7 @@ export function GameSidebar({
 
             {/* Settings / Footer */}
             <div className="mt-8 pt-6 border-t border-white/10 flex flex-col gap-4">
-              {/* AI Difficulty Slider - Only if playing against AI */}
+              {/* AI Difficulty Slider - Only if playing against AI (ai or training) */}
               {(initialMode === 'ai' || initialMode === 'training') && onSetAiDifficulty && (
                 <div className="flex flex-col gap-2 p-3 bg-white/5 border border-white/10 rounded-xl">
                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-cyan-400">

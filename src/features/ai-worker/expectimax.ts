@@ -1,7 +1,11 @@
 /**
  * Expectimax Search for Backgammon AI
  * Depth-2 game tree search with chance nodes for dice rolls
- * 
+ *
+ * NOTE: all returned values are clamped to [-50, 50] so they are
+ * directly comparable with the NN/heuristic evaluation scale used
+ * elsewhere (also [-50, 50]).
+ *
  * Algorithm:
  * MAX (AI) → CHANCE (dice roll) → MIN (opponent) → CHANCE → Heuristic
  */
@@ -9,19 +13,29 @@
 import type { GameState, Move, PlayerColor } from '../../entities/game/types';
 import { getValidMoves, applyMove, getHomeBoard, getBarIndex, getOffIndex, getDirection, allCheckersHome } from '../../entities/game/rules';
 
+const EXPECTIMAX_MAX = 50;
+
+function clampScore(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value > EXPECTIMAX_MAX) return EXPECTIMAX_MAX;
+  if (value < -EXPECTIMAX_MAX) return -EXPECTIMAX_MAX;
+  return value;
+}
+
 // -----------------------------------------------------------
 // 2. PESOS INICIALES RECOMENDADOS (Tuned for Strategic Play)
 // -----------------------------------------------------------
 const WEIGHTS = {
-  pipCount: -0.8,         // Race efficiency (negative because lower is better)
-  prime: 1.0,             // Building structure/primes
-  anchor: 0.8,            // Holding defensive points
-  blotRisk: 2.2,          // Avoid getting hit (higher weight for safety)
-  boardStrength: 0.6,     // Home board strength (points made)
-  homeBoard: 0.5,         // Specific home board structure
-  raceMode: 1.5,          // Multiplier for pip count when in race mode
-  hitBonus: 1.0,          // Incentive for safe captures
-  bearOff: 1.5            // Strong incentive for bearing off in race/bear-off phases
+  pipCount: -0.6,
+  prime: 1.2,
+  anchor: 0.9,
+  blotRisk: 2.8,
+  boardStrength: 0.8,
+  homeBoard: 0.7,
+  raceMode: 1.2,
+  hitBonus: 1.2,
+  bearOff: 2.2,
+  contactBearOff: 1.4,
 };
 
 /**
@@ -63,7 +77,7 @@ export async function getBestMove(
     
     // Evaluate this branch
     const value = await expectimaxChance(newState, depth - 1, state.turn);
-    
+
     if (value > bestValue) {
       bestValue = value;
       bestMove = move;
@@ -77,36 +91,33 @@ export async function getBestMove(
  * CHANCE node: Calculate expected value over all possible dice rolls
  * OPTIMIZED: Parallel evaluation of all dice combinations
  */
-async function expectimaxChance(
+export async function expectimaxChance(
   state: GameState,
   depth: number,
   aiPlayer: PlayerColor
 ): Promise<number> {
   if (depth <= 0) {
-    return evaluatePosition(state.board, aiPlayer);
+    return clampScore(evaluatePosition(state.board, aiPlayer));
   }
-  
+
   // All possible dice combinations
   const diceCombinations = getAllDiceCombinations();
   
-  // Parallel evaluation of all branches
-  const evaluationPromises = diceCombinations.map(async ({ dice, probability }) => {
+  // Sequential evaluation to avoid Promise.all explosion on deep chance nodes
+  let expectedValue = 0;
+  for (const { dice, probability } of diceCombinations) {
     const newState: GameState = {
       ...state,
       dice,
       usedDice: [],
-      turn: state.turn === 'white' ? 'black' : 'white', // Switch turns
+      turn: state.turn === 'white' ? 'black' : 'white',
     };
-    
-    const value = await expectimaxMin(newState, depth - 1, aiPlayer);
-    return value * probability;
-  });
-  
-  const weightedValues = await Promise.all(evaluationPromises);
-  const expectedValue = weightedValues.reduce((sum, val) => sum + val, 0);
-  const totalProbability = diceCombinations.reduce((sum, { probability }) => sum + probability, 0);
-  
-  return expectedValue / totalProbability;
+
+    const value = clampScore(await expectimaxMin(newState, depth - 1, aiPlayer));
+    expectedValue += value * probability;
+  }
+
+  return clampScore(expectedValue);
 }
 
 /**
@@ -137,53 +148,56 @@ async function expectimaxMin(
     minValue = Math.min(minValue, value);
   }
   
-  return minValue;
+  return clampScore(minValue);
 }
 
 // -----------------------------------------------------------
 // 3. GAME PLAN & HEURISTIC LAYER
 // -----------------------------------------------------------
 
-type GamePlan = 'race' | 'prime' | 'attack' | 'holding' | 'mixed';
+type GamePlan = 'race' | 'prime' | 'attack' | 'holding' | 'blitz' | 'backgame' | 'mixed';
 
 /**
- * Rough classification of the current strategic plan.
- * This does NOT replace the main evaluation; it only
- * adjusts weights so the AI focuses on the right things.
+ * Strategic plan detection for high difficulty play.
  */
 function getGamePlan(board: number[], player: PlayerColor): GamePlan {
-  // Pure race already handled separately in evaluatePosition
   if (isRaceMode(board)) return 'race';
 
   const oppPlayer = player === 'white' ? 'black' : 'white';
-
   const primeScore = calculatePrimeScore(board, player);
   const oppPrimeScore = calculatePrimeScore(board, oppPlayer);
   const myAnchors = calculateAnchorScore(board, player);
   const oppAnchors = calculateAnchorScore(board, oppPlayer);
   const myHomeStrength = evaluateHomeBoard(board, player);
 
-  // Simple heuristics:
-  const hasStrongPrime = primeScore >= 1.5; // ~4+ point prime
-  const hasGoodAnchors = myAnchors >= 1.0;
-
-  // Opponent on the bar => attacking opportunity
   const oppBarIndex = getBarIndex(oppPlayer);
   const oppOnBar = Math.abs(board[oppBarIndex] ?? 0) > 0;
 
-  if (oppOnBar && myHomeStrength >= 3) {
-    return 'attack';
-  }
+  const hasStrongPrime = primeScore >= 1.5;
+  const hasGoodAnchors = myAnchors >= 1.0;
 
-  if (hasStrongPrime && oppPrimeScore < primeScore) {
-    return 'prime';
-  }
+  if (oppOnBar && myHomeStrength >= 3) return 'blitz';
+  if (hasStrongPrime && oppPrimeScore < primeScore) return 'prime';
+  if (hasGoodAnchors && oppAnchors < myAnchors) return 'holding';
 
-  if (hasGoodAnchors && oppAnchors < myAnchors) {
-    return 'holding';
-  }
+  const deepAnchors = countDeepAnchors(board, player);
+  const opponentFarAhead = calculatePipDiff(board, player) > 40;
+  if (deepAnchors >= 2 && opponentFarAhead) return 'backgame';
 
   return 'mixed';
+}
+
+function countDeepAnchors(board: number[], player: PlayerColor): number {
+  const [oppHomeStart, oppHomeEnd] = getHomeBoard(player === 'white' ? 'black' : 'white');
+  const sign = player === 'white' ? 1 : -1;
+  let count = 0;
+  for (let i = oppHomeStart; i <= oppHomeEnd; i++) {
+    const checkers = board[i] ?? 0;
+    if ((sign > 0 && checkers >= 2) || (sign < 0 && checkers <= -2)) {
+      count++;
+    }
+  }
+  return count;
 }
 
 /**
@@ -239,8 +253,9 @@ function countTrappedCheckers(board: number[], player: PlayerColor): number {
  * Returns value from AI player's perspective (-100 = loss, +100 = win)
  * NOTE: This is now a sync wrapper, but the NN evaluation is preferred if possible.
  */
-export function evaluatePosition(board: number[], aiPlayer: PlayerColor): number {
+export function evaluatePosition(board: number[], aiPlayer: PlayerColor, strategyIntensity = 1): number {
   const oppPlayer = aiPlayer === 'white' ? 'black' : 'white';
+  const sign = aiPlayer === 'white' ? 1 : -1;
   
   // 6. Win/loss check (terminal states) - Heavily weighted
   const aiOffIndex = getOffIndex(aiPlayer);
@@ -273,8 +288,10 @@ export function evaluatePosition(board: number[], aiPlayer: PlayerColor): number
       score += (aiBornOff - oppBornOff) * bearOffWeight;
 
       // Clamp in same range as non-race path
-      return Math.max(-50, Math.min(50, score));
+      return clampScore(score);
   }
+
+  const intensity = Math.min(Math.max(strategyIntensity, 1), 2);
 
   let score = 0;
 
@@ -282,19 +299,23 @@ export function evaluatePosition(board: number[], aiPlayer: PlayerColor): number
   const gamePlan = getGamePlan(board, aiPlayer);
 
   let pipWeight = WEIGHTS.pipCount * 0.05;
-  let primeWeight = WEIGHTS.prime;
-  let anchorWeight = WEIGHTS.anchor;
-  let blotRiskWeight = WEIGHTS.blotRisk;
+  let primeWeight = WEIGHTS.prime * intensity;
+  let anchorWeight = WEIGHTS.anchor * intensity;
+  let blotRiskWeight = WEIGHTS.blotRisk * intensity;
   let hitMultiplier = 1.0;
 
   if (gamePlan === 'prime') {
     primeWeight *= 1.4;
     pipWeight *= 0.7;
-  } else if (gamePlan === 'attack') {
-    hitMultiplier = 1.4;
+  } else if (gamePlan === 'attack' || gamePlan === 'blitz') {
+    hitMultiplier = gamePlan === 'blitz' ? 1.7 : 1.4;
     blotRiskWeight *= 0.8;
   } else if (gamePlan === 'holding') {
     anchorWeight *= 1.4;
+  } else if (gamePlan === 'backgame') {
+    anchorWeight *= 1.6;
+    blotRiskWeight *= 0.6;
+    hitMultiplier = 1.6;
   }
 
    // Direct bar penalties/rewards: being on the bar is very bad,
@@ -307,20 +328,26 @@ export function evaluatePosition(board: number[], aiPlayer: PlayerColor): number
 
    if (myBarCount > 0) {
      const oppHomeStrength = evaluateHomeBoard(board, oppPlayer);
-     // Strong penalty: checkers on the bar + strong opponent home board
-     // means it was a very costly risk to get hit.
      score -= myBarCount * (3 + oppHomeStrength);
    }
 
    if (oppBarCount > 0) {
      const myHomeStrength = evaluateHomeBoard(board, aiPlayer);
-     // Moderate reward: having the opponent on the bar is good,
-     // even more if our home board is strong.
      score += oppBarCount * (1.5 + myHomeStrength * 0.5);
    }
 
   // 1. Pip Count Score
   score += pipDiff * pipWeight;
+
+  // 1b. Pip momentum in contact mode. The base pipWeight (0.03) is nearly
+  // negligible, so positional bonuses (prime/anchor/made-points) can dominate
+  // and overvalue positions where we are far behind in the race. In contact,
+  // being behind by many pips is bad: the opponent is escaping. Add a clear
+  // pip-deficit signal here (verified by replay analysis: the heuristic gave
+  // +11.4 to a contact move expectimax evaluated at -3.3).
+  if (!isRaceMode(board)) {
+    score -= pipDiff * 0.10 * intensity;
+  }
 
   // 2. Prime Score (Building Walls)
   const primeScore = calculatePrimeScore(board, aiPlayer);
@@ -350,6 +377,80 @@ export function evaluatePosition(board: number[], aiPlayer: PlayerColor): number
   score += hitBonus;
 
   // 7. Board Strength (Home board points made)
+  const aiStrength = evaluateHomeBoard(board, aiPlayer);
+  const oppStrength = evaluateHomeBoard(board, oppPlayer);
+  score += (aiStrength - oppStrength) * WEIGHTS.boardStrength;
+
+  // 7b. Point-5 preference: in early/middle game, making or owning point 5 is valuable.
+  const point5 = board[5] ?? 0;
+  const ownsPoint5 = (aiPlayer === 'white' && point5 >= 2) || (aiPlayer === 'black' && point5 <= -2);
+  if (ownsPoint5) score += 1.1;
+
+  // 7c. Anti-stacking diversification: avoid stacking >3 checkers on one point.
+  for (let i = 1; i <= 24; i++) {
+    const v = board[i] ?? 0;
+    const ours = (aiPlayer === 'white' && v > 0) || (aiPlayer === 'black' && v < 0);
+    if (ours && Math.abs(v) > 3) score -= 0.3 * (Math.abs(v) - 3);
+  }
+
+  // 7d. Strategy Matrix positional bonuses (difficulty-scaled):
+  // - make strong inner points early: 5 for white / 20 for black
+  // - make 7-point / bar-point anchors
+  // - avoid stacking back checkers on the 24pt/1pt
+  if (strategyIntensity > 0) {
+    const strongInner = aiPlayer === 'white' ? 5 : 20;
+    const strongOuter = aiPlayer === 'white' ? 7 : 18;
+    const homeStart = aiPlayer === 'white' ? 1 : 19;
+    const homeEnd = aiPlayer === 'white' ? 6 : 24;
+
+    // Reward strong points in opponent home / inner board
+    const strongInnerCount = board[strongInner] ?? 0;
+    const ownsStrongInner = (sign > 0 && strongInnerCount >= 2) || (sign < 0 && strongInnerCount <= -2);
+    if (ownsStrongInner) score += 1.6 * intensity;
+
+    const strongOuterCount = board[strongOuter] ?? 0;
+    const ownsStrongOuter = (sign > 0 && strongOuterCount >= 2) || (sign < 0 && strongOuterCount <= -2);
+    if (ownsStrongOuter) score += 1.2 * intensity;
+
+    // Reward having anchors in opponent home
+    let anchors = 0;
+    for (let i = homeStart; i <= homeEnd; i++) {
+      const v = board[i] ?? 0;
+      if ((sign > 0 && v >= 2) || (sign < 0 && v <= -2)) anchors++;
+    }
+    if (anchors >= 2) score += 0.9 * intensity;
+
+    // Penalty for stacking all back checkers on point 24/1
+    const backPoint = aiPlayer === 'white' ? 24 : 1;
+    const backStack = Math.abs(board[backPoint] ?? 0);
+    if (backStack >= 4) score -= 0.6 * intensity;
+
+    // Bonus for split back checkers (not stacked)
+    const splitter = aiPlayer === 'white' ? 23 : 2;
+    const splitCount = board[splitter] ?? 0;
+    const hasSplitter = (sign > 0 && splitCount >= 2) || (sign < 0 && splitCount <= -2);
+    if (hasSplitter) score += 0.5 * intensity;
+  }
+
+  // 7e. Made-points / consolidation bonus (reward 2+ checkers on a point) and
+  // lone-blot penalty (contact positions). Helps break heuristic saturation in
+  // lost endgames where pip/born-off terms dominate and blotRisk/prime are 0.
+  if (!isRaceMode(board)) {
+    let madePoints = 0;
+    let exposedBlots = 0;
+    for (let i = 1; i <= 24; i++) {
+      const v = board[i] ?? 0;
+      if ((sign > 0 && v >= 2) || (sign < 0 && v <= -2)) madePoints++;
+      else if ((sign > 0 && v === 1) || (sign < 0 && v === -1)) exposedBlots++;
+    }
+    score += madePoints * 0.3 * intensity;
+    score -= exposedBlots * 0.12 * intensity;
+  }
+
+  // 8. Bearing-off bonus even before pure race mode.
+  if (aiAllHome || aiBornOff > oppBornOff) {
+    score += (aiBornOff - oppBornOff) * WEIGHTS.contactBearOff;
+  }
 
   // Helper bonus for bearing off
   score += (aiBornOff - oppBornOff) * 0.5;
@@ -441,59 +542,30 @@ export function calculateAnchorScore(board: number[], player: PlayerColor): numb
 export function calculateBlotRisk(board: number[], player: PlayerColor): number {
   let score = 0;
   const sign = player === 'white' ? 1 : -1;
-  
-  // Direction from Player POV
-  const direction = getDirection(player); // White: -1, Black: 1
-  
-  // Find all blots
+  const oppPlayer = player === 'white' ? 'black' : 'white';
+  const oppDirection = getDirection(oppPlayer);
+
   for (let i = 1; i <= 24; i++) {
      const checkers = board[i] ?? 0;
-     // Is it my blot?
      if ((sign > 0 && checkers === 1) || (sign < 0 && checkers === -1)) {
-         
-         // Check for opponent threats
-         // Threat comes from BEHIND the movement (i.e. where moves come FROM)
-         // White moves 24->1 (Dir -1). Threats come from higher indices.
-         // Black moves 1->24 (Dir 1). Threats come from lower indices.
-         
-         // Direct shots (1-6 pips away)
          for (let pip = 1; pip <= 6; pip++) {
-             // Corrected Logic: Threat is at `i + (direction * pip)`? No.
-             // White (Dir -1): Threat at `i + p` (Higher). 10 + 2 = 12. Correct.
-             // Black (Dir 1): Threat at `i - p` (Lower). 10 - 2 = 8. Correct.
-             
-             const threatIndex = i + (direction * pip); 
+             const threatIndex = i - oppDirection * pip;
              
              if (threatIndex >= 1 && threatIndex <= 24) {
                  const oppCheckers = board[threatIndex] ?? 0;
                  if ((sign > 0 && oppCheckers < 0) || (sign < 0 && oppCheckers > 0)) {
-                    score += (0.3 + (6 - pip) * 0.1); // Closer = Higher Risk
+                    score += (0.3 + (6 - pip) * 0.1);
                  }
              }
          }
-         
-         // Check Bar Threat
-         // If my blot is in opponents home board (entry zone), checking bar is vital.
-         // White (Home 1-6). Entry 19-24. 
-         // Black (Home 19-24). Entry 1-6.
-         // If I am White, and blot is at 19-24. Black on bar attacks me.
-         // If I am Black, and blot is at 1-6. White on bar attacks me.
-         
-         const oppBarIndex = getBarIndex(player === 'white' ? 'black' : 'white');
+
+         const oppBarIndex = getBarIndex(oppPlayer);
          const oppBarCount = Math.abs(board[oppBarIndex] ?? 0);
          
          if (oppBarCount > 0) {
-             // If I am White (moving 24->1).
-             // Opponent (Black) Enters 1..6.
-             // Opponent Hits White at 1..6.
-             // So if White Blot is at 1..6.
-             
              if (player === 'white' && i >= 1 && i <= 6) {
-                  score += 0.5; // High risk from bar
+                  score += 0.5;
              }
-             // If I am Black (moving 1->24).
-             // Opponent (White) Enters 24..19.
-             // Opponent Hits Black at 24..19.
              if (player === 'black' && i >= 19 && i <= 24) {
                   score += 0.5;
              }
@@ -605,19 +677,13 @@ export function isRaceMode(board: number[]): boolean {
 function getAllDiceCombinations(): Array<{ dice: number[]; probability: number }> {
   const combinations: Array<{ dice: number[]; probability: number }> = [];
   
+  // Generate all 36 ordered dice combinations for 2 dice (backgammon standard)
   for (let die1 = 1; die1 <= 6; die1++) {
-    for (let die2 = die1; die2 <= 6; die2++) {
-      if (die1 === die2) {
-        combinations.push({
-          dice: [die1, die1, die1, die1],
-          probability: 1 / 36,
-        });
-      } else {
-        combinations.push({
-          dice: [die1, die2],
-          probability: 2 / 36,
-        });
-      }
+    for (let die2 = 1; die2 <= 6; die2++) {
+      combinations.push({
+        dice: [die1, die2],
+        probability: 1 / 36,
+      });
     }
   }
   return combinations;

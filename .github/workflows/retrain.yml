@@ -1,0 +1,69 @@
+name: Retrain AI from Supabase history
+
+on:
+  schedule:
+    # Daily 04:10 UTC — no local PC needed.
+    - cron: '10 4 * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max history rows to read (default 3000)'
+        required: false
+        default: '3000'
+      depth:
+        description: 'Expectimax depth for dense labels (0-3)'
+        required: false
+        default: '2'
+      dry_run:
+        description: 'Validate only — do not publish (--dry-run)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retrain-ai
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Train + gate + publish
+        run: |
+          LIMIT="${{ github.event.inputs.limit || '3000' }}"
+          DEPTH="${{ github.event.inputs.depth || '2' }}"
+          DRY="${{ github.event.inputs.dry_run || 'false' }}"
+          ARGS="--limit=${LIMIT} --depth=${DEPTH} --holdout=3 --workers=2 --report=scripts/ai-training/train-report.jsonl"
+          if [ "${DRY}" = "true" ]; then
+            echo "::notice::Running in DRY-RUN mode (no publish)"
+            ARGS="${ARGS} --dry-run"
+          fi
+          node_modules/.bin/tsx scripts/ai-training/train-from-supabase.ts ${ARGS}
+        shell: bash
+
+      - name: Upload training report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: train-report
+          path: scripts/ai-training/train-report.jsonl
+          if-no-files-found: warn

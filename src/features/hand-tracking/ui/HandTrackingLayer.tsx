@@ -17,6 +17,8 @@ interface HandTrackingLayerProps {
   onRecalibrate?: () => void;
   // Feature Flag: Smart Tracking
   isActive?: boolean; 
+  mirrored?: boolean; // mirror video for selfie-style UX
+  useSharedCamera?: boolean; // reuse the app-wide camera (video call) to avoid contention
 }
 
 /**
@@ -33,7 +35,9 @@ export function HandTrackingLayer({
   cursor,
   shouldPromptRecalibration = false,
   onRecalibrate,
-  isActive = true // Default to true if not provided
+  isActive = true, // Default to true if not provided
+  mirrored = true // Default selfie mirror for front camera UX
+, useSharedCamera = false
 }: HandTrackingLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -45,11 +49,13 @@ export function HandTrackingLayer({
   
   // 1. Camera Management
   const { 
-    videoRef, 
+    videoRef: cameraVideoRef, 
     error: cameraError, 
     warning: cameraWarning,
-    isLoading: cameraLoading 
-  } = useCamera();
+    isLoading: cameraLoading,
+    startCamera,
+    stopCamera
+  } = useCamera(useSharedCamera ? { shared: true } : {});
 
   // 3. Shared MediaPipe Context
   const { 
@@ -59,6 +65,19 @@ export function HandTrackingLayer({
     error: mlError,
     videoDimensions // Get the robust dimensions
   } = useSharedMediaPipe();
+
+  // Start camera when layer is active and video is enabled
+  useEffect(() => {
+    if (isActive) {
+      startCamera().catch(console.error);
+    }
+    return () => {
+      if (isActive) {
+        stopCamera();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive]);
 
   // Initialize Camera & Model (Centralized)
   useEffect(() => {
@@ -125,21 +144,21 @@ export function HandTrackingLayer({
 
   // Handle Video Element Ref (Pass to Context)
   useEffect(() => {
-    if (showVideo && videoRef.current) {
+    if (showVideo && cameraVideoRef.current) {
         // Ensure webkit-playsinline for iOS
-        videoRef.current.setAttribute('webkit-playsinline', 'true');
-        videoRef.current.setAttribute('playsinline', 'true');
+        cameraVideoRef.current.setAttribute('webkit-playsinline', 'true');
+        cameraVideoRef.current.setAttribute('playsinline', 'true');
         
         // Start MediaPipe detection on the video element
-        if (videoRef.current.readyState >= 2) {
-             startDetection(videoRef.current);
+        if (cameraVideoRef.current.readyState >= 2) {
+             startDetection(cameraVideoRef.current);
         } else {
-             videoRef.current.onloadeddata = () => {
-                 if (videoRef.current) startDetection(videoRef.current);
+             cameraVideoRef.current.onloadeddata = () => {
+                 if (cameraVideoRef.current) startDetection(cameraVideoRef.current);
              };
         }
     }
-  }, [startDetection, showVideo, videoRef, cameraLoading]);
+  }, [startDetection, showVideo, cameraVideoRef, cameraLoading]);
 
   if ((mlError || cameraError) && !errorDismissed) {
     return (
@@ -170,8 +189,8 @@ export function HandTrackingLayer({
       {/* 1. Camera Feed (Background) */}
       {showVideo && (
         <video 
-          ref={videoRef}
-          className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+          ref={cameraVideoRef}
+          className={`absolute inset-0 w-full h-full object-cover ${mirrored ? 'scale-x-[-1]' : ''}`}
           playsInline
           muted
           autoPlay

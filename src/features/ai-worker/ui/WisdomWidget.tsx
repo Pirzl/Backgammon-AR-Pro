@@ -50,7 +50,7 @@ export function WisdomWidget() {
       </div>
 
       <div className="mt-2 text-[10px] text-gray-400 font-mono">
-        {stats.count.toLocaleString()} / 100.000 Patrones
+        {stats.count.toLocaleString()} / 500.000 Patrones
       </div>
 
     </div>

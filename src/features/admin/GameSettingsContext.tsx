@@ -112,9 +112,12 @@ export function GameSettingsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Check if a specific game mode is active
+  // Default: a mode NOT explicitly configured counts as ACTIVE (maintenance is opt-in disable).
+  // Without this, valid modes like 'training' that aren't in app_settings.games
+  // would be silently blocked and redirected to /maintenance.
   const isGameModeActive = useCallback((mode: GameMode): boolean => {
     const game = games.find(g => g.id === mode);
-    return game?.isActive ?? false;
+    return game?.isActive ?? true;
   }, [games]);
 
   // Update a single game's status

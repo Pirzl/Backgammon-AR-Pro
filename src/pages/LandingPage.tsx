@@ -40,14 +40,14 @@ export function LandingPage() {
   };
 
   const faqs = [
-    { q: "¿Qué es AIDoit4U?", a: "AIDoit4U es una plataforma de juegos de estrategia impulsada por inteligencia artificial. Permite jugar, aprender y mejorar habilidades estratégicas mediante sistemas de puntos, sin apuestas ni dinero real." },
-    { q: "¿Es gratis usar AIDoit4U?", a: "Sí. El uso del juego y sus funciones principales es completamente gratuito. No existen pagos, compras internas ni transacciones económicas." },
+    { q: "¿Qué es Backgammon-Vivo?", a: "Backgammon-Vivo es una plataforma de juegos de estrategia impulsada por inteligencia artificial. Permite jugar, aprender y mejorar habilidades estratégicas mediante sistemas de puntos, sin apuestas ni dinero real." },
+    { q: "¿Es gratis usar Backgammon-Vivo?", a: "Sí. El uso del juego y sus funciones principales es completamente gratuito. No existen pagos, compras internas ni transacciones económicas." },
     { q: "¿La IA aprende de mis partidas?", a: "Sí. El sistema utiliza técnicas de aprendizaje para mejorar su estilo de juego analizando patrones, decisiones y resultados. Todo el aprendizaje se realiza de forma anónima y sin recopilar datos sensibles." },
     { q: "¿Qué edad mínima se requiere para jugar?", a: "La plataforma está destinada a usuarios mayores de 13 años, en cumplimiento con el Reglamento General de Protección de Datos (GDPR). Los menores de 13 años necesitan consentimiento de sus tutores legales." },
     { q: "¿Se utilizan datos personales?", a: "Solo recopilamos los datos estrictamente necesarios para el funcionamiento del juego: estadísticas, progreso, configuración y datos técnicos del dispositivo. No recopilamos información sensible ni financiera." },
     { q: "¿Qué tipo de cookies utiliza la web?", a: "Usamos cookies técnicas para que el sitio funcione correctamente y cookies opcionales de análisis para mejorar la experiencia. No utilizamos cookies publicitarias ni de terceros con fines comerciales." },
     { q: "¿Puedo eliminar mis datos o mi cuenta?", a: "Sí. Puedes solicitar la eliminación de tus datos escribiendo a privacidad@aidoit4u.eu. Eliminaremos toda la información asociada a tu usuario según GDPR." },
-    { q: "¿Hay dinero real, apuestas o recompensas económicas?", a: "No. AIDoit4U funciona únicamente con un sistema de puntos virtuales. No existe dinero real, apuestas, premios económicos ni mecanismos de monetización." },
+    { q: "¿Hay dinero real, apuestas o recompensas económicas?", a: "No. Backgammon-Vivo funciona únicamente con un sistema de puntos virtuales. No existe dinero real, apuestas, premios económicos ni mecanismos de monetización." },
     { q: "¿Qué hago si encuentro un error o tengo un problema técnico?", a: "Puedes contactar con nuestro equipo en soporte@aidoit4u.eu. Intentaremos responder en un plazo de 24 a 72 horas." },
     { q: "¿Puedo jugar desde cualquier dispositivo?", a: "Sí. La plataforma está optimizada para navegadores modernos en ordenador, móvil y tablet. Recomendamos usar la versión más actualizada de tu navegador para el mejor rendimiento." }
   ];

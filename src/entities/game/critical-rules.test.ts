@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isValidMove } from './rules';
+import { isValidMove, canBearOff } from './rules';
 import { rollDice, validateDiceUsage, canPlayBothDice } from './utils';
 import { BAR_WHITE, BAR_BLACK, BOARD_SIZE } from './constants';
 import type { GameState, Move } from './types';
@@ -36,6 +36,52 @@ describe('Critical Backgammon Rules', () => {
       expect(dice).toContain(4);
       
       Math.random = originalRandom;
+    });
+  });
+
+  describe('Black Bearing Off (over-bear / higher-point rule)', () => {
+    function board(): number[] {
+      return new Array(BOARD_SIZE).fill(0);
+    }
+
+    it('allows over-bearing from 23 with a 6 when it is the only checker', () => {
+      const b = board();
+      b[23] = -1;
+      const result = canBearOff(b, 23, 6, 'black');
+      expect(result.valid).toBe(true);
+    });
+
+    it('forbids over-bearing from 23 when a checker sits further from off (19)', () => {
+      const b = board();
+      b[23] = -1;
+      b[19] = -1; // 19 is further from off (index 25) than 23
+      const result = canBearOff(b, 23, 6, 'black');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('higher point');
+    });
+
+    it('allows over-bearing from 23 when the only other checker is closer to off (24)', () => {
+      const b = board();
+      b[23] = -1;
+      b[24] = -1; // 24 is closer to off than 23
+      const result = canBearOff(b, 23, 6, 'black');
+      expect(result.valid).toBe(true);
+    });
+
+    it('forbids over-bearing from 24 when a checker is further from off (19)', () => {
+      const b = board();
+      b[24] = -1;
+      b[19] = -1;
+      const result = canBearOff(b, 24, 6, 'black');
+      expect(result.valid).toBe(false);
+    });
+
+    it('always allows an exact bear-off regardless of other checkers', () => {
+      const b = board();
+      b[24] = -1;
+      b[19] = -1;
+      const result = canBearOff(b, 24, 1, 'black');
+      expect(result.valid).toBe(true);
     });
   });
 

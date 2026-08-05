@@ -12,6 +12,30 @@ import { supabase } from '../../shared/api/supabase';
 import type { Move } from '../../entities/game/types';
 import { updatePlayerRank } from '../ranking/api';
 
+const MAX_CACHE_ENTRIES = 2048;
+const CACHE_TTL_MS = 1000 * 60 * 60 * 24;
+
+type CacheValue = { evaluation: Evaluation; expiresAt: number };
+const memoryCache = new Map<string, CacheValue>();
+
+function trimCache() {
+  if (memoryCache.size <= MAX_CACHE_ENTRIES) return;
+  const now = Date.now();
+  for (const [key, value] of memoryCache) {
+    if (value.expiresAt < now) memoryCache.delete(key);
+  }
+  {
+    const now2 = Date.now();
+    for (const [key, value] of memoryCache) {
+      if (value.expiresAt < now2) memoryCache.delete(key);
+    }
+  }
+  while (memoryCache.size > MAX_CACHE_ENTRIES) {
+    const oldest = [...memoryCache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)[0]!;
+    memoryCache.delete(oldest[0]);
+  }
+}
+
 /**
  * Stored evaluation for a board position
  */
@@ -35,24 +59,32 @@ export interface Evaluation {
  */
 export async function fetchEvaluation(hash: bigint): Promise<Evaluation | null> {
   const hashStr = BigInt.asIntN(64, hash).toString();
-  
+  const now = Date.now();
+  const cached = memoryCache.get(hashStr);
+  if (cached && cached.expiresAt >= now) {
+    return cached.evaluation;
+  }
+  if (cached) memoryCache.delete(hashStr);
+
   const { data, error } = await supabase
     .from('zobrist_evaluations')
     .select('equity, best_move, depth, created_at')
     .eq('id', hashStr)
     .maybeSingle();
-  
+
   if (error) {
     console.warn('Zobrist cache error:', error.code, error.message);
     return null;
   }
-  
+
   if (!data) {
-    // Cache miss (valid, just not found)
     return null;
   }
-  
-  return { id: hashStr, ...data } as Evaluation;
+
+  const evaluation = { id: hashStr, ...data } as Evaluation;
+  memoryCache.set(hashStr, { evaluation, expiresAt: now + CACHE_TTL_MS });
+  trimCache();
+  return evaluation;
 }
 
 /**
@@ -193,9 +225,9 @@ export async function getLearningStats(): Promise<{ count: number; wisdomScore: 
     }
 
     const validCount = count ?? 0;
-    // Formula: 100,000 positions = 100% Wisdom (Recalibrated from 10k)
+    // Formula: 500,000 positions = 100% Wisdom (Recalibrated from 100k)
     // Cap at 100
-    const wisdomScore = Math.min(100, Math.floor((validCount / 100000) * 100));
+    const wisdomScore = Math.min(100, Math.floor((validCount / 500000) * 100));
 
     return { count: validCount, wisdomScore };
   } catch (err) {

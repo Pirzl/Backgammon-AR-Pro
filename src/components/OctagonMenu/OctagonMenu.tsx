@@ -67,6 +67,12 @@ export const OctagonMenu: React.FC<OctagonMenuProps> = ({ onClose, onCalibrate, 
     return (localStorage.getItem('board_orientation') as 'left' | 'right') || 'right';
   });
   const [use3DStyle, setUse3DStyle] = useState(true);
+  // 1..10 dificultad IA (1 básico .. 10 master). Persistida en localStorage.
+  const [aiDifficulty, setAiDifficulty] = useState<number>(() => {
+    const saved = localStorage.getItem('vivo_ai_difficulty');
+    return saved ? parseInt(saved, 10) : 5;
+  });
+  const clampDifficulty = (value: number) => Math.max(1, Math.min(10, Math.round(value)));
 
   const [leaderboardData, setLeaderboardData] = useState<{name: string, points: number}[]>([]);
   const [dynamicContent, setDynamicContent] = useState<Record<number, string>>({});
@@ -75,6 +81,7 @@ export const OctagonMenu: React.FC<OctagonMenuProps> = ({ onClose, onCalibrate, 
   // Persist settings to localStorage when changed
   useEffect(() => {
     localStorage.setItem('vivo_hand_tracking_enabled', isHandTrackingEnabled.toString());
+    window.dispatchEvent(new CustomEvent('board-settings-changed'));
   }, [isHandTrackingEnabled]);
 
   useEffect(() => {
@@ -99,6 +106,10 @@ export const OctagonMenu: React.FC<OctagonMenuProps> = ({ onClose, onCalibrate, 
     window.dispatchEvent(new CustomEvent('board-settings-changed'));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orientation]);
+
+  useEffect(() => {
+    localStorage.setItem('vivo_ai_difficulty', aiDifficulty.toString());
+  }, [aiDifficulty]);
 
 
   // Fetch real CRM Leaderboard data
@@ -203,7 +214,11 @@ export const OctagonMenu: React.FC<OctagonMenuProps> = ({ onClose, onCalibrate, 
       icon: <Bot size={64} className="text-cyan-400" />, 
       color: 'cyan',
       description: 'Duelos estratégicos contra el CPU.',
-      action: () => navigate('/game?mode=ai'),
+      action: () => {
+        const saved = localStorage.getItem('vivo_ai_difficulty');
+        const difficulty = saved ? parseInt(saved, 10) : 5;
+        navigate(`/game?mode=ai&difficulty=${clampDifficulty(difficulty)}`);
+      },
       renderExtra: () => {
         // Determine real level label from actual data
         const score = aiTrainingStats?.wisdomScore ?? 0;
@@ -252,6 +267,27 @@ export const OctagonMenu: React.FC<OctagonMenuProps> = ({ onClose, onCalibrate, 
             <div className="flex justify-between items-center text-[10px] text-white/40 font-mono border-t border-cyan-500/10 pt-2">
               <span>{aiTrainingStats ? `${count.toLocaleString()} posiciones aprendidas` : 'Cargando datos...'}</span>
               <span className="text-white/25">/ 100.000</span>
+            </div>
+
+            {/* Difficulty selector */}
+            <div className="flex flex-col gap-2 border-t border-cyan-500/10 pt-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase font-bold text-cyan-400">Dificultad IA</span>
+                <span className="text-[10px] font-mono text-white/80">{aiDifficulty}/10</span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                value={aiDifficulty}
+                onChange={(e) => setAiDifficulty(parseInt(e.target.value, 10))}
+                className="accent-cyan-400 h-1 w-full"
+              />
+              <div className="flex justify-between text-[8px] text-white/30 font-mono">
+                <span>BÁSICO</span>
+                <span>AVANZADO</span>
+                <span>MASTER</span>
+              </div>
             </div>
           </div>
         );

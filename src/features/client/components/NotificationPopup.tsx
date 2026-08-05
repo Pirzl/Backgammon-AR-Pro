@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, Mail, Swords } from 'lucide-react';
+import { supabase } from '../../../shared/api/supabase';
 import type { Message } from '../../../entities/tournament/types';
 
 interface NotificationPopupProps {
@@ -26,7 +27,20 @@ export const NotificationPopup: React.FC<NotificationPopupProps> = ({ message, o
               ? JSON.parse(message.content) 
               : null;
           
-          if (content && content.senderId) {
+          if (content && content.roomId) {
+             // Mark the pending invitation as accepted so the sender gets redirected
+             // and the H2H match is created by the DB trigger.
+             supabase
+               .from('invitations')
+               .update({ status: 'accepted' })
+               .eq('room_id', content.roomId)
+               .eq('status', 'pending')
+               .then(({ error }) => {
+                 if (error) console.error('[NotificationPopup] Accept failed:', error);
+               });
+             // Navigate to the exact room so both players share the same channel/match.
+             navigate(`/game?mode=human&room=${encodeURIComponent(content.roomId)}`);
+          } else if (content && content.senderId) {
              navigate(`/game?mode=human&opponent=${content.senderId}`);
           } else {
              // Fallback
@@ -38,6 +52,30 @@ export const NotificationPopup: React.FC<NotificationPopupProps> = ({ message, o
           navigate('/game?mode=human');
           onDismiss();
       }
+  };
+
+  const handleReject = () => {
+      try {
+          const content = typeof message.content === 'string' && message.content.startsWith('{') 
+              ? JSON.parse(message.content) 
+              : null;
+          
+          // Record the rejection in the invitations table. Besides notifying the
+          // sender, this timestamps the rejection so the 5-min cooldown applies.
+          if (content && content.roomId) {
+             supabase
+               .from('invitations')
+               .update({ status: 'rejected' })
+               .eq('room_id', content.roomId)
+               .eq('status', 'pending')
+               .then(({ error }) => {
+                 if (error) console.error('[NotificationPopup] Reject failed:', error);
+               });
+          }
+      } catch (e) {
+          console.error("Error parsing invite:", e);
+      }
+      onDismiss();
   };
 
   return (
@@ -75,7 +113,7 @@ export const NotificationPopup: React.FC<NotificationPopupProps> = ({ message, o
                         ACEPTAR
                     </button>
                     <button 
-                        onClick={onDismiss}
+                        onClick={handleReject}
                         className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-medium rounded-lg transition-colors"
                     >
                         RECHAZAR

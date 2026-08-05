@@ -416,8 +416,7 @@ export const UserPlayerDirectory: React.FC<UserPlayerDirectoryProps> = ({
                     {(() => {
                         const isActuallyOnline = onlineUserIds.includes(client.id);
                         if (isActuallyOnline) return 'En Línea';
-                        if (!client.status || client.status === 'offline') return 'Desconectado';
-                        return client.status === 'active' ? 'En Línea' : client.status;
+                        return 'Desconectado';
                     })()}
                   </span>
                 </td>

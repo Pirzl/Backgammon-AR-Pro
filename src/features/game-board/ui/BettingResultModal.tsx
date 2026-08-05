@@ -5,6 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import { RotateCcw, Home } from 'lucide-react';
+import { getGeminiUsageColor } from '../lib/geminiUsage';
 
 interface BettingResultModalProps {
   isOpen: boolean;
@@ -14,6 +15,9 @@ interface BettingResultModalProps {
   cubeFinal: number;
   winMethod: 'normal' | 'gammon' | 'backgammon';
   totalGanado: number;
+  geminiCallsToday?: number;
+  geminiCallsGame?: number;
+  geminiDailyLimit?: number;
   onPlayAgain: () => void;
   onExit: () => void;
 }
@@ -26,6 +30,9 @@ export function BettingResultModal({
   cubeFinal,
   winMethod,
   totalGanado,
+  geminiCallsToday,
+  geminiCallsGame,
+  geminiDailyLimit,
   onPlayAgain,
   onExit,
 }: BettingResultModalProps) {
@@ -148,6 +155,32 @@ export function BettingResultModal({
               </div>
             </div>
           </div>
+
+          {typeof geminiCallsToday === 'number' && (
+            <div className="w-full bg-black/40 rounded-xl border border-cyan-500/20 p-4 mt-2 backdrop-blur-sm">
+              <h3 className="text-sm font-bold text-cyan-200 mb-2 uppercase tracking-wide">
+                ✨ Gemini
+              </h3>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="text-left">
+                  <div className="text-cyan-300/70">Esta partida:</div>
+                  <div className="text-cyan-100 font-bold">{geminiCallsGame ?? 0} llamadas</div>
+                </div>
+                <div className="text-left">
+                  <div className="text-cyan-300/70">Hoy (global):</div>
+                  <div className={`font-bold ${getGeminiUsageColor(geminiCallsToday)}`}>
+                    {geminiCallsToday} / {geminiDailyLimit ?? 1000}
+                    <span className="opacity-70 font-normal">
+                      {' '}· quedan {Math.max(0, (geminiDailyLimit ?? 1000) - geminiCallsToday)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <p className="text-[10px] text-cyan-200/70 font-medium mt-2 border-t border-cyan-500/10 pt-2">
+                Tokens FREE GRATIS · al agotarse hoy, la IA ya no puede pensar con claridad.
+              </p>
+            </div>
+          )}
 
           {/* Action Buttons */}
           <div className="flex flex-col md:flex-row gap-3 w-full mt-2">

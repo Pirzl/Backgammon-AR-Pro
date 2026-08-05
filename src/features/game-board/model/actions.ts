@@ -11,6 +11,7 @@ import { supabase } from '../../../shared/api/supabase';
 import { generateBoardSummary } from '../lib/useAICommentary';
 import { generateEvaluationScore } from '../ai-service';
 import { generateUUID } from '../../../shared/utils/uuid';
+import { ensureRecorder } from './match-recorder';
 
 /**
  * Game reducer for useActionState
@@ -25,28 +26,48 @@ export async function gameReducer(
 
   switch (action.type) {
     case 'ROLL_DICE': {
-      // Save current state to history before rolling
-      // Save current state to history before rolling (disabled to prevent undoing roll)
-      // const snapshot = createSnapshot(state);
-      
-      // Use dice from action (network/sync) or generate new ones (local)
       const newDice = 'dice' in action && action.dice ? action.dice : rollDice();
       
-      // Check if any moves are possible with these dice
       const possibleMoves = getValidMoves({
         ...state,
         dice: newDice,
         usedDice: [],
       });
 
+      const recorder = ensureRecorder(state.game_id);
+      recorder.finish(null, null);
+      recorder.ensureTurn(state.turn, newDice);
+
       return {
         ...state,
         dice: newDice,
         usedDice: [],
-        rollHistory: [...(state.rollHistory || []), { player: state.turn, dice: newDice }], // Append new roll
+        rollHistory: [...(state.rollHistory || []), { player: state.turn, dice: newDice }],
         isRolling: true,
         needsTurnConfirmation: possibleMoves.length === 0,
-        history: [], // Reset history on roll so we can't undo the roll itself
+        history: [],
+      };
+    }
+
+    case 'SYNC_DICE': {
+      const incoming = action.dice;
+      if (!Array.isArray(incoming) || incoming.length === 0) return state;
+
+      // Always trust the synced dice for this turn branch.
+      const possibleMoves = getValidMoves({
+        ...state,
+        dice: incoming,
+        usedDice: [],
+      });
+
+      return {
+        ...state,
+        dice: incoming,
+        usedDice: [],
+        rollHistory: [...(state.rollHistory || []), { player: state.turn, dice: incoming }],
+        isRolling: true,
+        needsTurnConfirmation: possibleMoves.length === 0,
+        history: [],
       };
     }
 
@@ -66,6 +87,10 @@ export async function gameReducer(
       // Apply move
       const newBoard = applyMove(state.board, move, state.turn);
       const newUsedDice = [...state.usedDice, move.die];
+      
+      const recorder = ensureRecorder(state.game_id);
+      recorder.ensureTurn(state.turn, state.dice);
+      recorder.addMove(move);
       
       // Check if all dice are used or no more moves available
       const updatedState: UIGameState = {
@@ -98,11 +123,18 @@ export async function gameReducer(
       }
 
       if (winner) {
+        const recorder = ensureRecorder(state.game_id);
+        recorder.finish(winner, 'normal');
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('vivo-match-finished', {
+            detail: { game_id: state.game_id, replay: recorder.toJSON() },
+          }));
+        }
          return {
             ...updatedState,
             winner,
             matchScore,
-            dice: [], // Clear dice to stop game
+            dice: [],
             isRolling: false,
             needsTurnConfirmation: false
          };
@@ -145,26 +177,22 @@ export async function gameReducer(
         const snapshot = createSnapshot(state);
         const { tension, summary } = generateBoardSummary(state);
 
-        // Async side-effect: Save game history snapshot
-        // We do this without `await` to unblock the UI instantly,
-        // letting Gemini think and calculate the Equity Score in the background.
-        
-        const game_id = state.game_id; // Using the real session game ID
+        const game_id = state.game_id;
+        const recorder = ensureRecorder(game_id);
 
-        generateEvaluationScore(summary, tension)
+        generateEvaluationScore(summary, tension, state)
           .then(({ evaluation, score }: { evaluation: string, score: number }) => {
-            // Dispatch custom event for immediate UI update regardless of DB status
             if (typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent('vivo-equity-update', { detail: { score } }));
             }
 
             return supabase.from('game_history_analysis').insert({
               game_id,
-              turn_number: state.history.length,
+              turn_number: (state.turn_count ?? 0) + 1,
               player_color: state.turn,
               board_snapshot: snapshot,
-              ai_evaluation: evaluation, // Raw analysis from Gemini
-              equity_score: score,       // Used by EquityBar UI
+              ai_evaluation: evaluation,
+              equity_score: score,
               is_win_move: state.winner !== null,
               tension_metric: tension,
             }).then(({ error }: { error: Error | null }) => {
@@ -173,6 +201,14 @@ export async function gameReducer(
           })
           .catch((err: Error) => console.error("Evaluation error:", err));
 
+        const nextWinner = state.winner;
+        if (nextWinner) {
+          recorder.finish(nextWinner, nextWinner === 'white' ? 'normal' : 'normal');
+          window.dispatchEvent(new CustomEvent('vivo-match-finished', {
+            detail: { game_id, replay: recorder.toJSON() },
+          }));
+        }
+
         return {
           ...state,
           turn: nextTurn,
@@ -180,7 +216,8 @@ export async function gameReducer(
           usedDice: [],
           isRolling: false,
           needsTurnConfirmation: false,
-          history: [], // Clear history so players cannot undo opponent's moves
+          history: [],
+          turn_count: (state.turn_count ?? 0) + 1,
         };
     }
 

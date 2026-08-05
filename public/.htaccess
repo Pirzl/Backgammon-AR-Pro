@@ -1,3 +1,6 @@
+# MediaPipe WASM: serve with the correct MIME type (required for streaming compilation)
+AddType application/wasm .wasm
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteBase /

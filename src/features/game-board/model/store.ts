@@ -27,6 +27,7 @@ export const INITIAL_GAME_STATE: UIGameState = {
   rollHistory: [],
   isRolling: false,
   winner: null,
+  turn_count: 0,
 };
 
 /**
@@ -46,5 +47,6 @@ export function createSnapshot(state: UIGameState): Omit<UIGameState, 'history' 
     matchScore: { ...state.matchScore },
     winner: state.winner,
     rollHistory: state.rollHistory ? [...state.rollHistory] : [],
+    turn_count: state.turn_count ?? 0,
   };
 }

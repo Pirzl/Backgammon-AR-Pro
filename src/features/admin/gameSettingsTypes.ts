@@ -1,7 +1,7 @@
 import type { GameSetting } from '../../entities/tournament/types';
 
 // Game mode identifiers
-export type GameMode = 'ai' | 'human';
+export type GameMode = 'ai' | 'human' | 'training';
 
 // Storage key for persisting settings
 export const STORAGE_KEY = 'vivo_game_settings';
@@ -9,7 +9,8 @@ export const STORAGE_KEY = 'vivo_game_settings';
 // Default game settings
 export const DEFAULT_GAMES: GameSetting[] = [
   { id: 'ai', name: 'Play against the AI', isActive: true },
-  { id: 'human', name: 'Play against humans', isActive: true }
+  { id: 'human', name: 'Play against humans', isActive: true },
+  { id: 'training', name: 'Training mode', isActive: true }
 ];
 
 // Context value type

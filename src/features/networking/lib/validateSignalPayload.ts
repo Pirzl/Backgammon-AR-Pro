@@ -6,7 +6,10 @@
 // Maximum allowed payload size in bytes (10KB)
 const MAX_PAYLOAD_SIZE = 10 * 1024;
 
-const ALLOWED_TYPES = ["offer", "answer", "ice-candidate", "cursor", "GAME_UPDATE"];
+// Maximum length of a chat message payload (in characters).
+const MAX_CHAT_MESSAGE_LENGTH = 2000;
+
+const ALLOWED_TYPES = ["offer", "answer", "ice-candidate", "cursor", "GAME_UPDATE", "chat-message"];
 
 
 
@@ -72,11 +75,11 @@ export function validateSignalPayload(payload: unknown): boolean {
       case "GAME_UPDATE": {
         // Validate game update structure
         if (typeof p.event !== "string") return false;
-        const allowedEvents = ["ROLL_DICE", "MOVE_CHECKER", "UNDO_MOVE", "NEW_GAME", "CONFIRM_TURN_END", "OFFER_DOUBLE", "TAKE_DOUBLE", "DROP_DOUBLE"];
+        const allowedEvents = ["ROLL_DICE", "SYNC_DICE", "MOVE_CHECKER", "UNDO_MOVE", "NEW_GAME", "CONFIRM_TURN_END", "OFFER_DOUBLE", "TAKE_DOUBLE", "DROP_DOUBLE"];
         if (!allowedEvents.includes(p.event)) return false;
         
         // Validate payload based on event type
-        if (p.event === "ROLL_DICE" && p.payload?.dice) {
+        if ((p.event === "ROLL_DICE" || p.event === "SYNC_DICE") && p.payload?.dice) {
           if (!Array.isArray(p.payload.dice) || p.payload.dice.length === 0) return false;
           if (p.payload.dice.some((d: unknown) => typeof d !== "number" || d < 1 || d > 6)) return false;
         }
@@ -90,6 +93,13 @@ export function validateSignalPayload(payload: unknown): boolean {
         }
         break;
       }
+
+      case "chat-message":
+        // Validate the chat payload is a trimmed non-empty string within limits.
+        if (typeof p.payload !== "string") return false;
+        if (p.payload.trim().length === 0) return false;
+        if (p.payload.length > MAX_CHAT_MESSAGE_LENGTH) return false;
+        break;
 
       default:
         return false;

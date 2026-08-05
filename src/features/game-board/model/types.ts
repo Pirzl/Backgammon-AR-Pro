@@ -11,6 +11,7 @@ export type { GameState, Move };
  */
 export type GameAction =
   | { type: 'ROLL_DICE'; dice?: number[] }
+  | { type: 'SYNC_DICE'; dice: number[] }
   | { type: 'MOVE_CHECKER'; move: Move }
   | { type: 'UNDO_MOVE' }
   | { type: 'NEW_GAME' }
@@ -27,6 +28,10 @@ export interface UIGameState extends GameState {
   history: GameState[];
   isRolling: boolean;
   needsTurnConfirmation?: boolean;
+  /** Global turn counter, incremented once per CONFIRM_TURN_END. Used as the
+   *  authoritative game-order index when recording `game_history_analysis`
+   *  (`turn_number`), replacing the previous per-turn move count. */
+  turn_count?: number;
 }
 
 

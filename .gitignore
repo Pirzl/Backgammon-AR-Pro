@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,3 +27,30 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Deploy artifacts (never commit built zips)
+dist_deploy.zip
+deploy_production.zip
+/*.zip
+
+# Host / dev scratch
+__pycache__/
+*.pyc
+hermes_ollama_agent.py
+_netlify_preview/
+backup-*/
+graphify-out/
+.hermes/
+.graphifyignore
+match10.ts
+test-bar-entry.mjs
+verify-real.mjs
+0
+session_log.json
+test_session_log.json
+build_check.txt
+tsc_check.txt
+
+# Local Supabase CLI temp + training logs
+supabase/.temp/
+scripts/ai-training/train-report.jsonl

@@ -1,73 +1,43 @@
-# React + TypeScript + Vite
+# BACKGAMMON-VIVO
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+VIVO es un juego de backgammon en React/Vite/TS con MediaPipe AR, IA, WebRTC y ranking.
+El proyecto prioriza ejecución local, pruebas accesibles y flujos listos para desarrollo.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- React + Vite + TypeScript
+- Supabase (auth, realtime, storage)
+- MediaPipe (hand tracking / AR)
+- WebRTC (video chat / signaling)
+- IA local: expectimax + NN + self-play training
 
-## React Compiler
+## Scripts útiles
 
-The React Compiler is currently not compatible with SWC. See [this issue](https://github.com/vitejs/vite-plugin-react/issues/428) for tracking the progress.
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
+npm run build
+npm run test
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Runners de entrenamiento / verificación
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+En `scripts/ai-training` hay runners operacionales:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+- `run-one-game.ts`: ejecuta una partida real de self-play con `SelfPlayRunner` y devuelve JSON con `winner`, `method`, `movesPlayed`, `gameTimeMs`, `positions`.
+- `probe-expectimax.ts`: ejecuta `getBestMove()` en la posición inicial y devuelve JSON con `depth`, `move`, `value`, `ms`.
+- `check-supabase.ts`: escanea rutas clave y cuenta referencias a Supabase/auth/session/ranking/wallet/betting.
+
+Ejecución recomendada:
+
+```bash
+cd "E:\Proyecto\BACKGAMMON\BACKGAMMON-VIVO - copia"
+npx.cmd tsx scripts/ai-training/run-one-game.ts
+npx.cmd tsx scripts/ai-training/probe-expectimax.ts
+npx.cmd tsx scripts/ai-training/check-supabase.ts
 ```
+
+## Notas
+
+- Si `tsx` no está disponible, usar `npx.cmd tsx ...` en Windows.
+- Los runners de entrenamiento no modifican la UI ni el gameplay; son de lectura/ejecución controlada.

@@ -138,6 +138,72 @@ describe('AI Heuristics', () => {
     });
   });
 
+  describe('F) Pip momentum in contact mode', () => {
+    test('should penalize being far behind on pips in a contact position', () => {
+      // Contact position (both colors overlap): white blot + black checkers
+      // so isRaceMode is false. Same board shape, only the pip distribution
+      // differs: one side has a big pip lead (ahead = more borne-off / closer
+      // to home), the other is stuck far back.
+      const behindBoard = [...emptyBoard];
+      // White (player) far behind: 2 white checkers deep at point 24, 13 white
+      // checkers already home/bearing — but black still in contact.
+      behindBoard[24] = 2;   // White back checkers
+      behindBoard[6] = 5;    // White home
+      behindBoard[8] = 5;    // White mid
+      behindBoard[13] = 3;   // White mid
+      behindBoard[1] = -2;   // Black back checkers (contact)
+      behindBoard[12] = -5;  // Black mid
+      behindBoard[19] = -5;  // Black home
+      behindBoard[17] = -3;  // Black mid
+
+      const aheadBoard = [...emptyBoard];
+      // White (player) far ahead: checkers moved home / borne off, black still
+      // stuck far back with more pips.
+      aheadBoard[24] = 1;    // White back checker
+      aheadBoard[6] = 6;     // White home
+      aheadBoard[8] = 6;     // White home-ish
+      aheadBoard[4] = 2;     // White home
+      aheadBoard[1] = -2;    // Black back checkers (contact, far behind)
+      aheadBoard[12] = -5;   // Black mid
+      aheadBoard[19] = -5;   // Black home
+      aheadBoard[17] = -3;   // Black mid
+
+      // Both must be contact positions (not race).
+      expect(isRaceMode(behindBoard)).toBe(false);
+      expect(isRaceMode(aheadBoard)).toBe(false);
+
+      const behindScore = evaluatePosition(behindBoard, 'white');
+      const aheadScore = evaluatePosition(aheadBoard, 'white');
+
+      // The side with the pip lead should evaluate strictly higher.
+      expect(aheadScore).toBeGreaterThan(behindScore);
+    });
+
+    test('should NOT penalize pip deficit when in a pure race (no contact)', () => {
+      // Race mode: white all home, black all far — no overlap, so pip
+      // momentum term is skipped and only the race branch applies.
+      const raceAhead = [...emptyBoard];
+      raceAhead[1] = 15;               // White all at home
+      raceAhead[24] = -10;             // Black far back
+      raceAhead[20] = -5;
+      expect(isRaceMode(raceAhead)).toBe(true);
+
+      const raceBehind = [...emptyBoard];
+      raceBehind[1] = 5;               // White stuck near home
+      raceBehind[6] = 10;
+      raceBehind[24] = -10;            // Black far back
+      raceBehind[20] = -5;
+      expect(isRaceMode(raceBehind)).toBe(true);
+
+      // Even though white is behind on pips in raceBehind, both go through
+      // the same race branch (pip momentum is contact-only). The one with
+      // more pips disadvantage should still score lower via the race pip term.
+      const aheadScore = evaluatePosition(raceAhead, 'white');
+      const behindScore = evaluatePosition(raceBehind, 'white');
+      expect(aheadScore).toBeGreaterThan(behindScore);
+    });
+  });
+
   // Note: getGamePlan and countTrappedCheckers are intentionally kept internal
   // to avoid over-coupling tests with AI internals. Their effects are validated
   // indirectly via evaluatePosition behaviour in the scenarios above.

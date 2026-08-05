@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../../../shared/api/supabase";
 import type { ClientData } from "../../../entities/tournament/types";
+import { isRecentlyActive } from "../../../shared/lib/presence";
 
 export const useClients = () => {
   const [clients, setClients] = useState<ClientData[]>([]);
@@ -19,27 +20,22 @@ export const useClients = () => {
 
         // Transform to ClientData — use real presence data
         const now = Date.now();
-        const ONLINE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
 
         const mappedClients: ClientData[] = profiles.map((p) => {
-          // Determine real online status using status field + last_seen threshold
-          const isRecentlyActive =
-            p.last_seen &&
-            now - new Date(p.last_seen).getTime() < ONLINE_THRESHOLD;
+          // Determine real online status using heartbeat recency (last_seen).
+          // The `status` column alone is sticky (never auto-reset offline on
+          // mobile/crash) → online is derived ONLY from a recent last_seen.
+          const isRecentlyActiveStatus = isRecentlyActive(p.last_seen, now);
           let realStatus: ClientData["status"] = "offline";
           if (
-            p.status === "online" ||
-            (p.status === "active" && isRecentlyActive)
+            isRecentlyActiveStatus &&
+            ["online", "active", "in-game"].includes(p.status)
           ) {
-            realStatus = "online";
-          } else if (p.status === "in-game") {
-            realStatus = "in-game";
+            realStatus = p.status === "in-game" ? "in-game" : "online";
           } else if (p.status === "blocked") {
             realStatus = "blocked";
           } else if (p.status === "paused") {
             realStatus = "paused";
-          } else if (isRecentlyActive) {
-            realStatus = "online";
           }
 
           return {
@@ -121,26 +117,18 @@ export const useClients = () => {
               if (client.id === payload.new.id) {
                 // Re-calculate realStatus using the same logic as the initial map
                 const now = Date.now();
-                const ONLINE_THRESHOLD = 5 * 60 * 1000;
-                const isRecentlyActive =
-                  payload.new.last_seen &&
-                  now - new Date(payload.new.last_seen).getTime() <
-                    ONLINE_THRESHOLD;
+                const isRecentlyActiveStatus = isRecentlyActive(payload.new.last_seen, now);
 
                 let realStatus: ClientData["status"] = "offline";
                 if (
-                  payload.new.status === "online" ||
-                  (payload.new.status === "active" && isRecentlyActive)
+                  isRecentlyActiveStatus &&
+                  ["online", "active", "in-game"].includes(payload.new.status)
                 ) {
-                  realStatus = "online";
-                } else if (payload.new.status === "in-game") {
-                  realStatus = "in-game";
+                  realStatus = payload.new.status === "in-game" ? "in-game" : "online";
                 } else if (payload.new.status === "blocked") {
                   realStatus = "blocked";
                 } else if (payload.new.status === "paused") {
                   realStatus = "paused";
-                } else if (isRecentlyActive) {
-                  realStatus = "online";
                 }
 
                 return {

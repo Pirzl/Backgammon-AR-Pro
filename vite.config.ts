@@ -11,8 +11,13 @@ export default defineConfig({
     strictPort: false,
   },
   build: {
+    outDir: 'dist',
+    assetsDir: '',
     rollupOptions: {
       output: {
+        entryFileNames: `[name].js`,
+        chunkFileNames: `[name].js`,
+        assetFileNames: `[name].[ext]`,
         manualChunks: {
           'vendor-react': ['react', 'react-dom'],
           'vendor-ui': ['framer-motion', 'lucide-react'],

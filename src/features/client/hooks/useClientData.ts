@@ -373,7 +373,13 @@ export const useClientData = () => {
                     room_id: roomId
                 });
 
-            if (inviteError) throw inviteError;
+            if (inviteError) {
+                const msg = typeof inviteError.message === 'string' ? inviteError.message : '';
+                // PostgREST error.message is not always an Error instance; rethrow
+                // a real Error so the CRM alert shows the actual message (e.g. the
+                // 5-minute cooldown triggered by the DB trigger).
+                throw new Error(msg || 'No se pudo enviar la invitación. Inténtalo de nuevo.');
+            }
 
             // 2. Insert into notifications table for the toast alert
             await supabase.from('notifications').insert({

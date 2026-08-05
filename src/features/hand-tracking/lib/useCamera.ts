@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { sharedCamera } from '../../video-call/lib/sharedCamera';
 
 
 interface CameraDevice {
@@ -18,7 +19,18 @@ interface CameraState {
 
 const CAMERA_PREFERENCE_KEY = 'backgammon-vivo-preferred-camera';
 
-export function useCamera() {
+export interface UseCameraOptions {
+  autoStart?: boolean;
+  /**
+   * Modo compartido: reutiliza la cámara ÚNICA de la app (videollamada).
+   * Evita el segundo getUserMedia que en móvil provoca "cámara en uso".
+   * El stream NO se detiene al soltarlo si la llamada sigue activa.
+   */
+  shared?: boolean;
+}
+
+export function useCamera(_options: UseCameraOptions = {}) {
+  const { shared = false } = _options;
   const [cameraState, setCameraState] = useState<CameraState>({
     stream: null,
     error: null,
@@ -31,6 +43,7 @@ export function useCamera() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const initInProgressRef = useRef(false);
+  const hasClaimRef = useRef(false);
 
   // -----------------------------
   // ENUMERATE CAMERAS
@@ -57,12 +70,30 @@ export function useCamera() {
   // STOP CAMERA
   // -----------------------------
   const stopCamera = useCallback(() => {
+    if (shared) {
+      // Solo libera si este hook tiene un claim activo (evita dobles release
+      // porque HandTrackingLayer llama stopCamera y useCamera también).
+      if (hasClaimRef.current) {
+        hasClaimRef.current = false;
+        sharedCamera.release();
+      }
+      streamRef.current = null;
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+      setCameraState(prev => ({ ...prev, stream: null }));
+      return;
+    }
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
       setCameraState(prev => ({ ...prev, stream: null }));
     }
-  }, []);
+  }, [shared]);
 
   // -----------------------------
   // START CAMERA (with fallback)
@@ -81,7 +112,49 @@ export function useCamera() {
         return;
       }
 
+      // SHARED MODE: reuse the app-wide camera (used by the video call).
+      // No segundo getUserMedia => no "cámara en uso" en móvil.
+      if (shared) {
+        try {
+          if (initInProgressRef.current) return;
+          initInProgressRef.current = true;
 
+          const newStream = await sharedCamera.acquire({ video: true, audio: false, deviceId });
+          if (!newStream) throw new Error('shared camera unavailable');
+
+          hasClaimRef.current = true;
+          streamRef.current = newStream;
+
+          if (videoRef.current) {
+            videoRef.current.srcObject = newStream;
+            videoRef.current.muted = true;
+            try {
+              await videoRef.current.play();
+            } catch (e) {
+              console.warn('Video play error (handled):', e);
+            }
+          }
+
+          setCameraState(prev => ({
+            ...prev,
+            stream: newStream,
+            isLoading: false,
+            error: null,
+            selectedDeviceId: deviceId || null,
+          }));
+        } catch (unknownErr) {
+          console.error('Error accessing camera:', unknownErr);
+          setCameraState(prev => ({
+            ...prev,
+            error: 'No se pudo acceder a la cámara. Revisa permisos.',
+            isLoading: false,
+            stream: null,
+          }));
+        } finally {
+          initInProgressRef.current = false;
+        }
+        return;
+      }
 
       // 2. Resolution fallback list
 
@@ -98,7 +171,7 @@ export function useCamera() {
           video: {
             // Using ideal instead of exact prevents OverconstrainedError if a saved device disappears
             deviceId: deviceId ? { ideal: deviceId } : undefined,
-            facingMode: deviceId ? undefined : { ideal: 'environment' },
+            facingMode: deviceId ? undefined : { ideal: 'user' },
             width: { ideal: 640 },
             height: { ideal: 480 },
             // Removed max: 30 which causes issues on some virtual/mac cameras
@@ -195,49 +268,82 @@ export function useCamera() {
         initInProgressRef.current = false;
       }
     },
-    [enumerateCameras]
+    [enumerateCameras, shared]
   );
 
-
+  // Public start that won't double-start if already running
+  const startCameraIfNeeded = useCallback(
+    async (deviceId?: string) => {
+      // En modo shared SIEMPRE adquirimos (cada acquire empareja con un release);
+      // el guard solo aplica al modo propietario.
+      if (!shared && streamRef.current) return;
+      await startCamera(deviceId);
+    },
+    [startCamera, shared]
+  );
 
   // -----------------------------
   // SWITCH CAMERA
   // -----------------------------
   const switchCamera = useCallback(
     async (deviceId: string) => {
+      if (shared) {
+        await sharedCamera.switchDevice(deviceId);
+        streamRef.current = sharedCamera.getStream();
+        if (videoRef.current) {
+          videoRef.current.srcObject = streamRef.current;
+        }
+        setCameraState(prev => ({
+          ...prev,
+          stream: streamRef.current,
+          selectedDeviceId: deviceId,
+        }));
+        return;
+      }
       stopCamera();
       await startCamera(deviceId);
     },
-    [stopCamera, startCamera]
+    [shared, stopCamera, startCamera]
   );
 
   // -----------------------------
-  // AUTO-START ON MOUNT
+  // SHARED MODE: Sync with the shared stream
   // -----------------------------
   useEffect(() => {
-    const init = async () => {
-      const saved = localStorage.getItem(CAMERA_PREFERENCE_KEY);
-
-      if (saved) {
-        try {
-          await startCamera(saved);
-          return;
-        } catch {
-          await startCamera();
+    if (!shared) return;
+    const sync = () => {
+      const s = sharedCamera.getStream();
+      if (s && s !== streamRef.current) {
+        streamRef.current = s;
+        if (videoRef.current) {
+          videoRef.current.srcObject = s;
+          videoRef.current.muted = true;
+          videoRef.current.play().catch(() => undefined);
         }
-      } else {
-        await startCamera();
+        setCameraState(prev => ({
+          ...prev,
+          stream: s,
+          isLoading: false,
+          error: null,
+        }));
       }
     };
+    // Si la cámara ya está activa (p.ej. la llamada la tomó primero), sincroniza ya.
+    sync();
+    const unsubscribe = sharedCamera.subscribe(sync);
+    return unsubscribe;
+  }, [shared]);
 
-    init();
-
+  // -----------------------------
+  // NO AUTO-START ON MOUNT
+  // -----------------------------
+  useEffect(() => {
     return () => stopCamera();
-  }, [startCamera, stopCamera]);
+  }, [stopCamera]);
 
   return {
     videoRef,
-    startCamera,
+    startCamera: startCameraIfNeeded,
     stopCamera,
     switchCamera,
     availableCameras: cameraState.availableCameras,
