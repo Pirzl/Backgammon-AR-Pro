@@ -165,6 +165,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   const { state, dispatch, isPending } = useGameState();
   const [, startTransition] = useTransition();
   const isVsComputer = initialMode === 'ai' || initialMode === 'training';
+  // Fase 1 videoconferencia: partida iniciada cuando se lanzó al menos una vez
+  // (rollHistory nunca se limpia; a diferencia de state.dice, que se vacía al
+  // fin de turno). Antes -> miniatura del rival; después -> fondo crystal.
+  const gameStarted = (state.rollHistory?.length ?? 0) > 0;
   
   // AI Worker for persistence & learning
   const { recordMove, notifyGameEnd } = useAIWorker(() => {
@@ -2203,7 +2207,12 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
       {/* Crystal Window call controls — persistente durante TODA la partida,
           no solo en el lobby, para que ambos humanos se vean en vivo */}
-      {isCrystalEnabled && (
+      {/* Fase 1 videoconferencia: ANTES del primer lanzamiento se muestra la
+          miniatura del rival (VideoChat); AL tirar los dados por primera vez
+          la miniatura desaparece y el video del rival pasa a fondo (VideoLayer).
+          `gameStarted` se deriva de rollHistory (nunca se limpia) para no
+          confundir el vaciado de dados de fin de turno con el inicio. */}
+      {isCrystalEnabled && !gameStarted && (
         <VideoChat
           localStream={localStream}
           remoteStream={remoteStream}
@@ -2242,8 +2251,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       {/* Hand Tracking Layer (Background Video Only) or Crystal Video Layer */}
       {/* Z-0: Behind everything (Sidebar, Board, etc.) */}
       
-      {/* CASE 1: CRYSTAL WINDOW MODE */}
-      {isCrystalEnabled && (
+      {/* CASE 1: CRYSTAL WINDOW MODE — fondo solo una vez iniciada la partida
+          (tras el primer lanzamiento de dados); antes se muestra el VideoChat
+          miniatura del rival */}
+      {isCrystalEnabled && gameStarted && (
          <VideoLayer 
             stream={remoteStream} 
             metrics={metrics}

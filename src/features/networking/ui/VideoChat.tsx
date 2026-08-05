@@ -94,6 +94,19 @@ export function VideoChat({
             </span>
           </div>
         )}
+        {/* Connection status badge (Fase 1 videoconferencia) */}
+        <div className={`absolute bottom-1 left-1 flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+          connectionStatus === 'connected'
+            ? 'bg-emerald-500/80 text-black'
+            : connectionStatus === 'connecting'
+            ? 'bg-amber-500/80 text-black animate-pulse'
+            : 'bg-white/15 text-white/60'
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${
+            connectionStatus === 'connected' ? 'bg-black' : 'bg-current'
+          }`} />
+          {connectionStatus === 'connected' ? 'Rival' : connectionStatus === 'connecting' ? 'Conectando' : 'Esperando'}
+        </div>
         
         {/* Revoke Button (Privacy P0) - Visible on Hover */}
         <button 

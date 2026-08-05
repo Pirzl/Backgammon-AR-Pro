@@ -47,9 +47,9 @@ export const VideoLayer: React.FC<VideoLayerProps> = ({ stream, className, metri
         ref={videoRef}
         autoPlay
         playsInline
-        muted // Remote audio should be handled separately if needed, but usually we want to hear them. mute for local testing? 
-              // Actually, for remote peer, we want to hear them. But if testing locally (mirror), mute it.
-              // For now, let's leave unmuted, user allows audio.
+        // Fase 1 videoconferencia: el audio del rival SÍ se oye (el VideoChat
+        // miniatura se desmonta al iniciarse la partida; el fondo toma su rol).
+        // Desactivar: quitar 'autoPlay' haría que el video requiera interacción.
         className={`w-full h-full object-cover transition-opacity duration-500 ${isPoorConnection ? 'opacity-50 blur-sm' : 'opacity-100'}`}
         style={{
            // Transform: scaleX(-1) if we wanted to mirror remote, but usually we don't.
