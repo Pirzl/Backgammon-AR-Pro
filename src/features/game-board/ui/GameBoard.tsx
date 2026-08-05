@@ -817,7 +817,17 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     localStorage.setItem('vivo_hand_tracking_enabled', isHandTracking.toString());
     console.log('[GameBoard] Hand Tracking Toggled:', isHandTracking);
   }, [isHandTracking]);
-  
+
+  // Keep camera state aligned with hand tracking when synced from external
+  // controls (sidebar + OctagonMenu via localStorage event).
+  useEffect(() => {
+    if (isHandTracking) {
+      startCamera().catch(console.error);
+    } else {
+      stopCamera();
+    }
+  }, [isHandTracking, startCamera, stopCamera]);
+
   // Create a Ref to hold the latest handleSignal to avoid stale closures in the signaling subscription
   const handleSignalRef = useRef(handleSignal);
   
@@ -2212,28 +2222,37 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
           la miniatura desaparece y el video del rival pasa a fondo (VideoLayer).
           `gameStarted` se deriva de rollHistory (nunca se limpia) para no
           confundir el vaciado de dados de fin de turno con el inicio. */}
+      {/* Crystal Window call controls — persistente durante TODA la partida,
+          no solo en el lobby, para que ambos humanos se vean en vivo.
+          En móvil se oculta la miniatura para dejar solo el fondo de video. */}
       {isCrystalEnabled && !gameStarted && (
-        <VideoChat
-          localStream={localStream}
-          remoteStream={remoteStream}
-          connectionStatus={connectionStatus}
-          startCall={startCall}
-          toggleAudio={toggleAudio}
-          toggleVideo={toggleVideo}
-          hangUp={hangUp}
-          disabled={!isCrystalEnabled}
-        />
+        <div className="hidden md:block">
+          <VideoChat
+            localStream={localStream}
+            remoteStream={remoteStream}
+            connectionStatus={connectionStatus}
+            startCall={startCall}
+            toggleAudio={toggleAudio}
+            toggleVideo={toggleVideo}
+            hangUp={hangUp}
+            disabled={!isCrystalEnabled}
+          />
+        </div>
       )}
 
-      {/* H2H text chat overlay (persistente durante la partida) */}
+      {/* H2H text chat overlay (persistente durante la partida).
+          En móvil se oculta por defecto para limpiar el fondo; se puede
+          seguir abriendo desde el control correspondiente si existe. */}
       {initialMode === 'human' && (
-        <ChatPanel
-          messages={chat.messages}
-          isOpen={chat.isOpen}
-          onToggle={chat.toggleChat}
-          onSend={chat.sendChat}
-          connectionStatus={connectionStatus}
-        />
+        <div className="hidden md:block">
+          <ChatPanel
+            messages={chat.messages}
+            isOpen={chat.isOpen}
+            onToggle={chat.toggleChat}
+            onSend={chat.sendChat}
+            connectionStatus={connectionStatus}
+          />
+        </div>
       )}
 
       {showCalibration && (
@@ -2296,29 +2315,11 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
         </div>
       )}
       
-      {/* If Crystal is Enabled: 1. Invisible Local Tracker, 2. Ghost Hand Layer */}
+      {/* If Crystal is Enabled: Ghost Hand Layer.
+          El tracking local ya se ejecuta en la capa frontal superior; aquí no
+          renderizamos video local oculto para evitar duplicar procesamiento. */}
       {isHandTracking && !showCalibration && !state.winner && isCrystalEnabled && (
-         <>
-             <div className="absolute opacity-0 pointer-events-none" style={{ visibility: 'hidden' }}>
-                 {/* Invisible logic-only layer but needs to be in DOM for video ref */}
-                 {/* Note: visibility:hidden might stop video rendering in some browsers, opacity-0 is safer */}
-             </div>
-             <div className="absolute inset-0 opacity-0 pointer-events-none">
-                <HandTrackingLayer
-                    onReady={() => {}} 
-                    cursor={cursor}
-                    gesture={gesture}
-                    isHandActive={isHandActive}
-                    showVideo={true} 
-                    showOverlay={false}
-                    isActive={true}
-                    mirrored={true}
-                    useSharedCamera={true}
-                />
-             </div>
-             {/* Ghost Hand Layer (Receives Data) */}
-             <GhostHandLayer />
-         </>
+         <GhostHandLayer />
       )}
 
       {/* LEFT SIDEBAR - Controls & Stats */}

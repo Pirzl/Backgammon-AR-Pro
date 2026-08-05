@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { validateSignalPayload } from './validateSignalPayload';
 import { sharedCamera } from '../../video-call/lib/sharedCamera';
+import { resolveTurnConfig } from './turn';
 
 // Signaling types
-export type SignalData = 
+export type SignalData =
   | { type: 'offer'; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; sdp: RTCSessionDescriptionInit }
   | { type: 'ice-candidate'; candidate: RTCIceCandidateInit };
@@ -53,10 +54,9 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
     const startMedia = async () => {
       try {
-        const stream = await sharedCamera.acquire({ video: true, audio: true });
+        const stream = await sharedCamera.acquire({ video: true, audio: true, mode: 'call' });
         if (!isMounted) {
-          // Acquire resolvió después del desmontaje: libera al momento
-          sharedCamera.release();
+          sharedCamera.release('call');
           return;
         }
         hasClaim = true;
@@ -75,9 +75,8 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
     return () => {
       isMounted = false;
-      // Release the shared camera claim (stream may stay alive for hand tracking)
       if (hasClaim) {
-        sharedCamera.release();
+        sharedCamera.release('call');
       }
       localStreamRef.current = null;
       setLocalStream(null);
@@ -88,7 +87,7 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
   useEffect(() => {
     return sharedCamera.subscribe(() => {
       setLocalStream((current) => {
-        const shared = sharedCamera.getStream();
+        const shared = sharedCamera.getStream('call');
         if (shared && shared !== current) return shared;
         return current;
       });
@@ -110,25 +109,32 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
         // Without TURN, video fails over mobile/cellular (CGNAT) even though
         // STUN alone is enough on the same LAN. If the Edge Function is missing
         // TURN_API_KEY or the fetch fails, we gracefully fall back to STUN.
-        let iceServers: RTCIceServer[] = [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-        ];
-        try {
-            const turnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/turn-credentials`;
-            const res = await fetch(turnUrl);
-            if (res.ok) {
-                const creds = await res.json();
-                const servers: RTCIceServer[] = Array.isArray(creds?.iceServers)
-                    ? creds.iceServers
-                    : [];
-                if (servers.length > 0) {
-                    iceServers = servers;
-                    console.log('[VideoChat] Using TURN credentials from Edge Function');
+        const turnConfig = resolveTurnConfig();
+        let iceServers = turnConfig.iceServers;
+        if (turnConfig.source === 'edge') {
+            try {
+                const turnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/turn-credentials`;
+                const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+                const res = await fetch(turnUrl, anonKey ? {
+                    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
+                } : undefined);
+                if (res.ok) {
+                    const creds = await res.json();
+                    const servers: RTCIceServer[] = Array.isArray(creds?.iceServers)
+                        ? creds.iceServers
+                        : [];
+                    if (servers.length > 0) {
+                        iceServers = servers;
+                        console.log('[VideoChat] Using TURN credentials from Edge Function');
+                    }
                 }
+            } catch (e) {
+                console.warn('[Security] TURN fetch failed, falling back to', turnConfig.source, e);
             }
-        } catch (e) {
-            console.warn('[Security] TURN fetch failed, falling back to STUN', e);
+        } else if (turnConfig.source === 'override') {
+            console.log('[VideoChat] Using TURN override config');
+        } else {
+            console.log('[VideoChat] Using STUN-only fallback');
         }
 
         // 1. Create PeerConnection

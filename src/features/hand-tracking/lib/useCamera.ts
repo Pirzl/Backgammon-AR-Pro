@@ -102,7 +102,6 @@ export function useCamera(_options: UseCameraOptions = {}) {
     async (deviceId?: string) => {
       setCameraState(prev => ({ ...prev, isLoading: true, error: null }));
 
-      // 1. Secure Context check
       if (!window.isSecureContext) {
         setCameraState(prev => ({
           ...prev,
@@ -112,116 +111,40 @@ export function useCamera(_options: UseCameraOptions = {}) {
         return;
       }
 
-      // SHARED MODE: reuse the app-wide camera (used by the video call).
-      // No segundo getUserMedia => no "cámara en uso" en móvil.
-      if (shared) {
-        try {
-          if (initInProgressRef.current) return;
-          initInProgressRef.current = true;
-
-          const newStream = await sharedCamera.acquire({ video: true, audio: false, deviceId });
-          if (!newStream) throw new Error('shared camera unavailable');
-
-          hasClaimRef.current = true;
-          streamRef.current = newStream;
-
-          if (videoRef.current) {
-            videoRef.current.srcObject = newStream;
-            videoRef.current.muted = true;
-            try {
-              await videoRef.current.play();
-            } catch (e) {
-              console.warn('Video play error (handled):', e);
-            }
-          }
-
-          setCameraState(prev => ({
-            ...prev,
-            stream: newStream,
-            isLoading: false,
-            error: null,
-            selectedDeviceId: deviceId || null,
-          }));
-        } catch (unknownErr) {
-          console.error('Error accessing camera:', unknownErr);
-          setCameraState(prev => ({
-            ...prev,
-            error: 'No se pudo acceder a la cámara. Revisa permisos.',
-            isLoading: false,
-            stream: null,
-          }));
-        } finally {
-          initInProgressRef.current = false;
-        }
-        return;
-      }
-
-      // 2. Resolution fallback list
-
-            // 3. Try to get stream
       try {
         if (initInProgressRef.current) return;
         initInProgressRef.current = true;
 
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(t => t.stop());
-        }
+        const newStream = shared
+          ? await sharedCamera.acquire({ video: true, audio: false, deviceId, mode: 'tracking' })
+          : await navigator.mediaDevices.getUserMedia({
+              video: {
+                deviceId: deviceId ? { ideal: deviceId } : undefined,
+                facingMode: deviceId ? undefined : { ideal: 'user' },
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 30 },
+              },
+            });
 
-        const newStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            // Using ideal instead of exact prevents OverconstrainedError if a saved device disappears
-            deviceId: deviceId ? { ideal: deviceId } : undefined,
-            facingMode: deviceId ? undefined : { ideal: 'user' },
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-            // Removed max: 30 which causes issues on some virtual/mac cameras
-            frameRate: { ideal: 30 }
-          }
-        });
+        if (!newStream) throw new Error('camera unavailable');
 
-
-        // SEC-002: HARDWARE CAPABILITY VERIFICATION (Anti-Virtual Camera)
-        const videoTrack = newStream.getVideoTracks()[0];
-        // Define interface for capabilities if missing in current lib
-        interface ExtendedCapabilities extends MediaTrackCapabilities {
-          zoom?: number;
-          focusMode?: string;
-        }
-
-        if (videoTrack && typeof videoTrack.getCapabilities === 'function') {
-          const capabilities = videoTrack.getCapabilities() as ExtendedCapabilities;
-          // Virtual cameras often miss these specific hardware capabilities
-          const isVirtual = !capabilities.facingMode && !capabilities.focusMode && !capabilities.zoom;
-          
-          if (isVirtual) {
-            console.warn('[Security] Virtual camera detected. High-security features may be limited.');
-            setCameraState(prev => ({ ...prev, warning: 'Cámara virtual detectada. Si no ves imagen, conecta una física.' }));
-          } else {
-            setCameraState(prev => ({ ...prev, warning: null }));
-          }
-        }
-
-
+        hasClaimRef.current = shared;
         streamRef.current = newStream;
-        
+
         if (videoRef.current) {
-          // Clear previous stream to avoid AbortError
           if (videoRef.current.srcObject && videoRef.current.srcObject !== newStream) {
-             const prev = videoRef.current.srcObject as MediaStream;
-             prev.getTracks().forEach(t => t.stop());
-             videoRef.current.srcObject = null;
+            const prev = videoRef.current.srcObject as MediaStream;
+            prev.getTracks().forEach(t => t.stop());
+            videoRef.current.srcObject = null;
           }
 
-          const wasMuted = videoRef.current.muted;
           videoRef.current.muted = true;
           videoRef.current.srcObject = newStream;
-          
           try {
             await videoRef.current.play();
           } catch (e) {
             console.warn('Video play error (handled):', e);
-          } finally {
-            videoRef.current.muted = wasMuted;
           }
         }
 
@@ -235,17 +158,15 @@ export function useCamera(_options: UseCameraOptions = {}) {
           isLoading: false,
           availableCameras: cameras,
           selectedDeviceId: actualDeviceId,
-          error: null
+          error: null,
         }));
 
         if (actualDeviceId) {
           localStorage.setItem(CAMERA_PREFERENCE_KEY, actualDeviceId);
         }
-
       } catch (unknownErr) {
         console.error('Error accessing camera:', unknownErr);
         let errorMessage = 'No se pudo acceder a la cámara. Revisa permisos.';
-
         if (unknownErr instanceof Error) {
           if (unknownErr.name === 'NotFoundError' || unknownErr.name === 'DevicesNotFoundError') {
             errorMessage = 'No se detectó ninguna cámara conectada. Por favor, conecta una y recarga.';
@@ -262,7 +183,7 @@ export function useCamera(_options: UseCameraOptions = {}) {
           ...prev,
           error: errorMessage,
           isLoading: false,
-          stream: null
+          stream: null,
         }));
       } finally {
         initInProgressRef.current = false;

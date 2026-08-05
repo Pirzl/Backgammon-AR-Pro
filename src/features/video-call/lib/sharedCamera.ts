@@ -22,12 +22,15 @@ interface AcquireOptions {
   video?: boolean;
   audio?: boolean;
   deviceId?: string;
+  mode?: 'call' | 'tracking';
 }
 
 class SharedCamera {
-  private stream: MediaStream | null = null;
+  private callStream: MediaStream | null = null;
+  private trackingStream: MediaStream | null = null;
   private audioTrack: MediaStreamTrack | null = null;
-  private refCount = 0;
+  private callRefCount = 0;
+  private trackingRefCount = 0;
   private creating: Promise<MediaStream | null> | null = null;
   private listeners = new Set<Listener>();
 
@@ -36,84 +39,88 @@ class SharedCamera {
     return () => this.listeners.delete(fn);
   }
 
-  getStream(): MediaStream | null {
-    return this.stream;
+  getStream(mode: 'call' | 'tracking' = 'call'): MediaStream | null {
+    return mode === 'tracking' ? this.trackingStream : this.callStream;
   }
 
   private notify() {
     this.listeners.forEach((fn) => {
-      try {
-        fn();
-      } catch {
-        /* ignore */
-      }
+      try { fn(); } catch { /* ignore */ }
     });
   }
 
-  /** Obtiene el stream compartido. Cada llamada DEBE emparejarse con release(). */
   async acquire(opts: AcquireOptions = {}): Promise<MediaStream | null> {
-    const video = opts.video ?? true;
-    const audio = opts.audio ?? false;
-    this.refCount++;
+    const mode = opts.mode ?? 'call';
+    if (mode === 'tracking') {
+      this.trackingRefCount++;
+      if (!this.trackingStream) {
+        const s = await this.create(opts.video ?? true, false, opts.deviceId, 'tracking');
+        this.trackingStream = s;
+      }
+      return this.trackingStream;
+    }
 
-    if (!this.stream) {
+    this.callRefCount++;
+    if (!this.callStream) {
       if (!this.creating) {
-        this.creating = this.create(video, audio, opts.deviceId);
+        this.creating = this.create(opts.video ?? true, opts.audio ?? false, opts.deviceId, 'call');
       }
       await this.creating;
       this.creating = null;
-    } else if (audio) {
+    } else if (opts.audio) {
       await this.ensureAudio();
     }
-
-    return this.stream;
+    return this.callStream;
   }
 
-  release() {
-    this.refCount = Math.max(0, this.refCount - 1);
-    if (this.refCount === 0) {
-      this.teardown();
-    }
-  }
-
-  /** Cambia de dispositivo de video (reemplaza el track compartido). */
-  async switchDevice(deviceId: string): Promise<void> {
-    if (!this.stream) {
-      await this.acquire({ video: true, audio: false, deviceId });
+  release(mode: 'call' | 'tracking' = 'call') {
+    if (mode === 'tracking') {
+      this.trackingRefCount = Math.max(0, this.trackingRefCount - 1);
+      if (this.trackingRefCount === 0 && this.trackingStream) {
+        this.trackingStream.getTracks().forEach(t => t.stop());
+        this.trackingStream = null;
+        this.notify();
+      }
       return;
     }
 
-    const videoTrack = this.stream.getVideoTracks()[0];
-    if (videoTrack) {
+    this.callRefCount = Math.max(0, this.callRefCount - 1);
+    if (this.callRefCount === 0) {
+      this.teardownCall();
+    }
+  }
+
+  async switchDevice(deviceId: string): Promise<void> {
+    const applyToStream = async (stream: MediaStream | null, mode: 'call' | 'tracking') => {
+      if (!stream) return;
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) return;
       try {
         await videoTrack.applyConstraints({ deviceId: { exact: deviceId } });
-        this.notify();
-        return;
       } catch (e) {
-        console.warn('[SharedCamera] applyConstraints falló, recreando stream:', e);
+        console.warn(`[SharedCamera] applyConstraints falló (${mode}), recreando stream:`, e);
+        const fresh = await this.create(true, mode === 'call' ? false : false, deviceId, mode);
+        if (mode === 'call') {
+          this.callStream = fresh ?? this.callStream;
+        } else {
+          this.trackingStream = fresh ?? this.trackingStream;
+        }
       }
-    }
+      this.notify();
+    };
 
-    videoTrack?.stop();
-    const fresh = await this.create(true, false, deviceId);
-    if (fresh && this.stream) {
-      // Reemplaza los tracks de video del stream compartido conservando el audio
-      const oldVideoTrack = this.stream.getVideoTracks()[0];
-      if (oldVideoTrack) this.stream.removeTrack(oldVideoTrack);
-      fresh.getVideoTracks().forEach((t) => this.stream?.addTrack(t));
-    }
-    this.notify();
+    await applyToStream(this.callStream, 'call');
+    await applyToStream(this.trackingStream, 'tracking');
   }
 
   private async create(
     video: boolean,
     audio: boolean,
     deviceId?: string,
+    mode: 'call' | 'tracking' = 'call'
   ): Promise<MediaStream | null> {
     try {
       const isMobile = isMobileDevice();
-      // En móvil bajamos resolución y FPS: menos encode/decode e inferencia
-      // de MediaPipe → sin sobrecalentamiento ni batería drenada.
       const videoConstraints: MediaTrackConstraints = isMobile
         ? {
             facingMode: deviceId ? undefined : { ideal: 'user' },
@@ -132,23 +139,25 @@ class SharedCamera {
 
       const constraints: MediaStreamConstraints = {
         video: video ? videoConstraints : false,
-        audio,
+        audio: mode === 'call' ? audio : false,
       };
 
       const s = await navigator.mediaDevices.getUserMedia(constraints);
-      this.stream = s;
-      const audioTrack = s.getAudioTracks()[0] ?? null;
-      if (audio && audioTrack) {
-        this.audioTrack = audioTrack;
+      if (mode === 'call') {
+        this.callStream = s;
+        const audioTrack = s.getAudioTracks()[0] ?? null;
+        if (audio && audioTrack) {
+          this.audioTrack = audioTrack;
+        }
+      } else {
+        this.trackingStream = s;
       }
       this.notify();
       return s;
     } catch (e) {
-      // Si pedimos audio+video juntos y el micrófono se deniega, reintenta
-      // con SOLO video para no perder la cámara (fallback crítico en móvil).
-      if (audio && video) {
+      if (mode === 'call' && audio && video) {
         console.warn('[SharedCamera] audio+video falló, reintentando solo video:', e);
-        return this.create(video, false, deviceId);
+        return this.create(video, false, deviceId, mode);
       }
       console.error('[SharedCamera] getUserMedia falló:', e);
       return null;
@@ -156,13 +165,13 @@ class SharedCamera {
   }
 
   private async ensureAudio(): Promise<void> {
-    if (this.audioTrack || !this.stream) return;
+    if (this.audioTrack || !this.callStream) return;
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
       const t = s.getAudioTracks()[0];
       if (t) {
         this.audioTrack = t;
-        this.stream.addTrack(t);
+        this.callStream.addTrack(t);
         this.notify();
       }
     } catch (e) {
@@ -170,10 +179,10 @@ class SharedCamera {
     }
   }
 
-  private teardown() {
-    if (this.stream) {
-      this.stream.getTracks().forEach((t) => t.stop());
-      this.stream = null;
+  private teardownCall() {
+    if (this.callStream) {
+      this.callStream.getTracks().forEach((t) => t.stop());
+      this.callStream = null;
     }
     this.audioTrack = null;
     this.notify();

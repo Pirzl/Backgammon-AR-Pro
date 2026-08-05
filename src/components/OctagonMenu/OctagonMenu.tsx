@@ -46,10 +46,21 @@ export const OctagonMenu: React.FC<OctagonMenuProps> = ({ onClose, onCalibrate, 
   const touchStartX = useRef(0);
   const touchEndX = useRef(0);
 
-  // Initialize state from localStorage for persistence
-  const [isHandTrackingEnabled, setIsHandTrackingEnabled] = useState(() => {
-    return localStorage.getItem('vivo_hand_tracking_enabled') === 'true';
-  });
+  // Read hand tracking from localStorage; changes are synced via the
+  // `board-settings-changed` event so GameBoard can keep the camera aligned.
+  const handTrackingFromStorage = typeof window !== 'undefined'
+    ? localStorage.getItem('vivo_hand_tracking_enabled') === 'true'
+    : false;
+  const [isHandTrackingEnabled, setIsHandTrackingEnabled] = useState(handTrackingFromStorage);
+
+  useEffect(() => {
+    const sync = () => {
+      const saved = localStorage.getItem('vivo_hand_tracking_enabled');
+      if (saved !== null) setIsHandTrackingEnabled(saved === 'true');
+    };
+    window.addEventListener('board-settings-changed', sync);
+    return () => window.removeEventListener('board-settings-changed', sync);
+  }, []);
 
   // Options states
   const [translucency, setTranslucency] = useState(() => {
@@ -242,7 +253,12 @@ export const OctagonMenu: React.FC<OctagonMenuProps> = ({ onClose, onCalibrate, 
 
             {/* Score + Level */}
             <div className="flex items-end justify-between">
-              <span className="text-3xl font-black text-white leading-none">{score}%</span>
+              <div className="flex flex-col">
+                <span className="text-3xl font-black text-white leading-none">{score}%</span>
+                <span className="text-[10px] font-mono text-white/50">
+                  {aiTrainingStats ? `${count.toLocaleString()} / 500.000` : 'Cargando datos...'}
+                </span>
+              </div>
               <span
                 className="text-[10px] font-bold px-2 py-0.5 rounded-full border"
                 style={{ color: barColor, borderColor: barColor + '50', backgroundColor: barColor + '15' }}
