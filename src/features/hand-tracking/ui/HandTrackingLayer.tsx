@@ -19,6 +19,12 @@ interface HandTrackingLayerProps {
   isActive?: boolean; 
   mirrored?: boolean; // mirror video for selfie-style UX
   useSharedCamera?: boolean; // reuse the app-wide camera (video call) to avoid contention
+  /**
+   * Clases CSS extra para el <video> local. Permite ocultarlo visualmente
+   * (p.ej. opacity-0) SIN desmontarlo: MediaPipe necesita el elemento
+   * renderizado para leer frames y hacer tracking.
+   */
+  videoClassName?: string;
 }
 
 /**
@@ -38,6 +44,7 @@ export function HandTrackingLayer({
   isActive = true, // Default to true if not provided
   mirrored = true // Default selfie mirror for front camera UX
 , useSharedCamera = false
+, videoClassName
 }: HandTrackingLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -190,7 +197,7 @@ export function HandTrackingLayer({
       {showVideo && (
         <video 
           ref={cameraVideoRef}
-          className={`absolute inset-0 w-full h-full object-cover ${mirrored ? 'scale-x-[-1]' : ''}`}
+          className={`absolute inset-0 w-full h-full object-cover ${mirrored ? 'scale-x-[-1]' : ''} ${videoClassName || ''}`}
           playsInline
           muted
           autoPlay

@@ -37,7 +37,6 @@ import { useCubeHistory } from '../lib/useCubeHistory';
 import { CalibrationOverlay } from '../../hand-tracking/ui/CalibrationOverlay';
 import { HandTrackingLayer } from '../../hand-tracking/ui/HandTrackingLayer';
 import { CameraPermissionModal } from '../../hand-tracking/ui/CameraPermissionModal';
-import { GhostHandLayer } from '../../hand-tracking/ui/GhostHandLayer';
 import { FirstRunTutorial, hasSeenTutorial } from '../../game-board/ui/FirstRunTutorial';
 import { KeyboardShortcutsModal } from '../../game-board/ui/KeyboardShortcutsModal';
 import { VideoLayer } from '../../video-call/ui/VideoLayer';
@@ -2277,49 +2276,30 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
          <VideoLayer 
             stream={remoteStream} 
             metrics={metrics}
-            // connectionStatus={connectionStatus} // Removed as prop was removed from component
             className="z-0" 
          />
       )}
 
-      {/* CASE 2: LEGACY HAND TRACKING VIDEO (Only if Crystal is OFF) */}
-      {/* If Crystal is ON, HandTrackingLayer should NOT show video, only tracking, 
-          OR we rely on HandTrackingLayer for local self-view feedback in a corner? 
-          For Sprint 1: We stick to the plan -> Remote Video is Background. Local Hand is invisible/ghost. 
-          But wait, HandTrackingLayer usually shows the LOCAL camera as background. 
-          In Crystal Window, the LOCAL camera is the "User's Eyes". It shouldn't be rendered full screen 
-          unless we want that AR effect. 
-          Actually, the plan says: Layer 0 = Remote Video. Layer 2 = Local Hand (Ghost?).
-          
-          Let's MODIFY HandTrackingLayer behavior via props.
-      */}
-
-      {/* Legacy Hand Tracking Video (Background) - Disable if Crystal is active & connected? 
-          Actually, if Crystal is active, we might want to HIDE the local camera background 
-          because Layer 0 is the Remote Peer. 
-      */}
-      {/* CASE 2: LEGACY HAND TRACKING VIDEO (Only if Crystal is OFF) */}
-      {isHandTracking && !showCalibration && !state.winner && !isCrystalEnabled && (
+      {/* CASE 2: HAND TRACKING VIDEO (Background)
+          - no-Crystal (IA/training): video local visible como fondo (self-view).
+          - Crystal (H2H): video local oculto (opacity-0) pero RENDERIZADO, porque
+            MediaPipe necesita el <video> montado para leer frames y hacer tracking.
+            El fondo del rival lo pone VideoLayer (CASE 1). */}
+      {isHandTracking && !showCalibration && !state.winner && (
         <div className="absolute inset-0 z-0 pointer-events-none">
-          <HandTrackingLayer 
-            onReady={() => {}} 
+          <HandTrackingLayer
+            onReady={() => {}}
             cursor={cursor}
             gesture={gesture}
             isHandActive={isHandActive}
             showVideo={true}
-            showOverlay={false} 
+            showOverlay={false}
             isActive={true}
             mirrored={true}
             useSharedCamera={true}
+            videoClassName={isCrystalEnabled ? 'opacity-0 pointer-events-none' : ''}
           />
         </div>
-      )}
-      
-      {/* If Crystal is Enabled: Ghost Hand Layer.
-          El tracking local ya se ejecuta en la capa frontal superior; aquí no
-          renderizamos video local oculto para evitar duplicar procesamiento. */}
-      {isHandTracking && !showCalibration && !state.winner && isCrystalEnabled && (
-         <GhostHandLayer />
       )}
 
       {/* LEFT SIDEBAR - Controls & Stats */}

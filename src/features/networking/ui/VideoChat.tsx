@@ -24,20 +24,14 @@ export function VideoChat({
   hangUp,
   disabled = false
 }: VideoChatProps) {
-  const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
 
   const isInCall = connectionStatus === 'connected' || connectionStatus === 'connecting';
 
-  // Attach streams to video elements
-  useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
-    }
-  }, [localStream]);
-
+  // Attach remote stream to the (only) video element. The local stream is
+  // intentionally NOT rendered: the own camera feeds the hand tracking.
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
@@ -118,23 +112,9 @@ export function VideoChat({
         </button>
       </div>
 
-      {/* Local Video (PiP) */}
-      {/* ... */}
-      <div className="absolute bottom-24 right-2 w-16 h-12 bg-black rounded-lg overflow-hidden border border-white/20 shadow-lg">
-        { localStream ? (
-            <video 
-            ref={localVideoRef} 
-            autoPlay 
-            playsInline 
-            muted 
-            className={`w-full h-full object-cover scale-x-[-1] transition-opacity ${isVideoOff ? 'opacity-0' : 'opacity-100'}`} 
-            />
-        ) : (
-            <div className="w-full h-full bg-gray-900 flex items-center justify-center">
-                <VideoOff size={16} className="text-white/20" />
-            </div>
-        )}
-      </div>
+      {/* Local Video (PiP) REMOVED — on mobile it stacked too many videos.
+          The own camera is already (invisibly) feeding the local hand tracking;
+          the user only wants to see the opponent. Kept localStream wiring out. */}
 
       {/* Controls */}
       <div className="bg-black/60 backdrop-blur-md rounded-full p-2 flex items-center justify-center gap-4 border border-white/10">

@@ -75,7 +75,7 @@ export function useCamera(_options: UseCameraOptions = {}) {
       // porque HandTrackingLayer llama stopCamera y useCamera también).
       if (hasClaimRef.current) {
         hasClaimRef.current = false;
-        sharedCamera.release();
+        sharedCamera.release('tracking');
       }
       streamRef.current = null;
       if (videoRef.current) {
