@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Mic, Video, Phone, MicOff, VideoOff, XOctagon } from 'lucide-react';
+import { useState } from 'react';
+import { Mic, Video, Phone, MicOff, VideoOff } from 'lucide-react';
 
 interface VideoChatProps {
   localStream: MediaStream | null;
@@ -13,30 +13,27 @@ interface VideoChatProps {
   disabled?: boolean;
 }
 
+/**
+ * VideoChat — Controls-only bar for the H2H video call.
+ *
+ * No foreground video streams are rendered here. The remote peer's video
+ * is displayed exclusively in the background via VideoLayer (Crystal Window).
+ * The own camera feeds the hand tracking invisibly via HandTrackingLayer.
+ *
+ * This component renders only: Mic toggle, Video toggle, Call/Hang-up.
+ */
 export function VideoChat({ 
-  localStream, 
-  remoteStream, 
   connectionStatus, 
   startCall,
   toggleAudio,
   toggleVideo,
-  stopAllTracks,
   hangUp,
   disabled = false
 }: VideoChatProps) {
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
 
   const isInCall = connectionStatus === 'connected' || connectionStatus === 'connecting';
-
-  // Attach remote stream to the (only) video element. The local stream is
-  // intentionally NOT rendered: the own camera feeds the hand tracking.
-  useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-    }
-  }, [remoteStream]);
 
   const handleToggleMic = () => {
       const newState = !isMuted;
@@ -49,88 +46,45 @@ export function VideoChat({
       setIsVideoOff(newState);
       toggleVideo?.(!newState);
   };
-
-  const handleRevoke = () => {
-      stopAllTracks?.();
-      // Optional: Visual confirmation or state update
-  };
   
   if (disabled) {
       return null;
   }
 
-  if (!localStream && connectionStatus === 'new') {
-      // Show start button or "Camera Access" state
-      // This handles the "Revoked" state too (localStream becomes null)
-      return (
-        <div className="fixed bottom-4 right-4 z-50 w-48 h-36 rounded-xl bg-black/80 border border-white/10 flex items-center justify-center p-3 text-center">
-          <span className="text-[10px] uppercase font-bold text-white/50 tracking-widest leading-tight">
-            Esperando sala...
-          </span>
-        </div>
-      );
-  }
-
   return (
-    <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
-      {/* Remote Video (Main) */}
-      <div className="relative w-48 h-36 bg-black/80 rounded-xl overflow-hidden shadow-2xl border border-white/10 group">
-        <video 
-          ref={remoteVideoRef} 
-          autoPlay 
-          playsInline 
-          className="w-full h-full object-cover"
-        />
-        {!remoteStream && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-[10px] uppercase font-bold text-white/30 tracking-widest">
-              {connectionStatus === 'connecting' ? 'Connecting...' : 'Waiting...'}
-            </span>
-          </div>
-        )}
-        {/* Connection status badge (Fase 1 videoconferencia) */}
-        <div className={`absolute bottom-1 left-1 flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
-          connectionStatus === 'connected'
-            ? 'bg-emerald-500/80 text-black'
-            : connectionStatus === 'connecting'
-            ? 'bg-amber-500/80 text-black animate-pulse'
-            : 'bg-white/15 text-white/60'
-        }`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${
-            connectionStatus === 'connected' ? 'bg-black' : 'bg-current'
-          }`} />
-          {connectionStatus === 'connected' ? 'Rival' : connectionStatus === 'connecting' ? 'Conectando' : 'Esperando'}
-        </div>
-        
-        {/* Revoke Button (Privacy P0) - Visible on Hover */}
-        <button 
-            onClick={handleRevoke}
-            className="absolute top-1 right-1 bg-red-600 hover:bg-red-700 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-            title="Revocar Acceso (Stop Camera)"
-        >
-            <XOctagon size={12} />
-        </button>
+    <div className="flex items-center gap-2 shadow-2xl">
+      {/* Connection status pill */}
+      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider select-none backdrop-blur-md shadow-md border ${
+        connectionStatus === 'connected'
+          ? 'bg-emerald-500/90 text-black border-emerald-400/50'
+          : connectionStatus === 'connecting'
+          ? 'bg-amber-500/90 text-black border-amber-400/50 animate-pulse'
+          : connectionStatus === 'closed'
+          ? 'bg-rose-600/90 text-white border-rose-500/50'
+          : 'bg-zinc-900/80 text-zinc-300 border-white/10'
+      }`}>
+        <span className={`w-2 h-2 rounded-full ${
+          connectionStatus === 'connected' ? 'bg-black' : 'bg-current'
+        }`} />
+        {connectionStatus === 'connected' ? 'Conectado' : connectionStatus === 'connecting' ? 'Conectando' : connectionStatus === 'closed' ? 'Cortado' : 'Esperando'}
       </div>
 
-      {/* Local Video (PiP) REMOVED — on mobile it stacked too many videos.
-          The own camera is already (invisibly) feeding the local hand tracking;
-          the user only wants to see the opponent. Kept localStream wiring out. */}
-
       {/* Controls */}
-      <div className="bg-black/60 backdrop-blur-md rounded-full p-2 flex items-center justify-center gap-4 border border-white/10">
+      <div className="bg-zinc-900/90 backdrop-blur-md rounded-full px-3.5 py-1.5 flex items-center justify-center gap-3 border border-white/15 shadow-xl">
         <button 
             onClick={handleToggleMic}
-            className={`text-white hover:text-cyan-400 transition-colors ${isMuted ? 'text-red-500' : ''}`}
+            className={`p-1.5 rounded-full transition-all cursor-pointer hover:bg-white/10 ${isMuted ? 'text-rose-400 hover:text-rose-300' : 'text-zinc-200 hover:text-cyan-400'}`}
+            title={isMuted ? 'Activar micrófono' : 'Silenciar micrófono'}
         >
-          {isMuted ? <MicOff size={16} /> : <Mic size={16} />}
+          {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
         </button>
         
         <button 
-          onClick={isInCall ? () => hangUp?.() : startCall} // Colgar si en llamada, si no llamar
+          onClick={isInCall ? () => hangUp?.() : startCall}
           title={isInCall ? 'Colgar llamada (la partida sigue)' : 'Llamar'}
           className={`
-            w-8 h-8 rounded-full flex items-center justify-center transition-all
-            ${isInCall ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}
+            w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md active:scale-95
+            ${isInCall ? 'bg-rose-600 hover:bg-rose-500' : 'bg-emerald-600 hover:bg-emerald-500'}
           `}
         >
           <Phone size={14} className="text-white fill-current" />
@@ -138,9 +92,10 @@ export function VideoChat({
 
         <button 
             onClick={handleToggleVideo}
-            className={`text-white hover:text-cyan-400 transition-colors ${isVideoOff ? 'text-red-500' : ''}`}
+            className={`p-1.5 rounded-full transition-all cursor-pointer hover:bg-white/10 ${isVideoOff ? 'text-rose-400 hover:text-rose-300' : 'text-zinc-200 hover:text-cyan-400'}`}
+            title={isVideoOff ? 'Activar cámara' : 'Apagar cámara'}
         >
-          {isVideoOff ? <VideoOff size={16} /> : <Video size={16} />}
+          {isVideoOff ? <VideoOff size={18} /> : <Video size={18} />}
         </button>
       </div>
     </div>

@@ -164,10 +164,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   const { state, dispatch, isPending } = useGameState();
   const [, startTransition] = useTransition();
   const isVsComputer = initialMode === 'ai' || initialMode === 'training';
-  // Fase 1 videoconferencia: partida iniciada cuando se lanzó al menos una vez
-  // (rollHistory nunca se limpia; a diferencia de state.dice, que se vacía al
-  // fin de turno). Antes -> miniatura del rival; después -> fondo crystal.
-  const gameStarted = (state.rollHistory?.length ?? 0) > 0;
+  // (gameStarted removed — VideoChat/VideoLayer no longer gate on first dice roll)
   
   // AI Worker for persistence & learning
   const { recordMove, notifyGameEnd } = useAIWorker(() => {
@@ -746,6 +743,9 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   
   // Persistent hand tracking preference
   const [isHandTracking, setIsHandTracking] = useState(() => {
+    // In H2H mode, auto-enable hand tracking — the camera is already active
+    // for the video call, so hand tracking comes "for free" via sharedCamera.
+    if (initialMode === 'human') return true;
     const saved = localStorage.getItem('vivo_hand_tracking_enabled');
     return saved === 'true';
   });
@@ -836,17 +836,27 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
   // Setup Signaling Effect
   useEffect(() => {
-    // Enable Signaling if mode is 'human' OR if Crystal is enabled (legacy check)
-    if ((initialMode !== 'human' && !isCrystalEnabled) || !initialRoomId || !user?.id) return;
+    if (initialMode !== 'human' && !isCrystalEnabled) return;
+
+    const roomId = initialRoomId || 'prototype-room';
+    let userId = user?.id;
+    if (!userId) {
+      let anonId = localStorage.getItem('vivo_anon_user_id');
+      if (!anonId) {
+        anonId = 'anon-' + Math.random().toString(36).substring(2, 8);
+        localStorage.setItem('vivo_anon_user_id', anonId);
+      }
+      userId = anonId;
+    }
 
     // Create instance if not exists
     let instance: SupabaseSignaling | null = null;
 
     if (!signalingChannel) {
-        console.log('[GameBoard] Creating SupabaseSignaling instance for Room:', initialRoomId);
+        console.log('[GameBoard] Creating SupabaseSignaling instance for Room:', roomId, 'User:', userId);
         instance = new SupabaseSignaling(
-            initialRoomId, 
-            user.id,
+            roomId, 
+            userId,
             (msg) => {
                 // Use Ref to always call the LATEST handleSignal
                 // msg IS the payload because SupabaseSignaling unwraps it.
@@ -2214,44 +2224,18 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
         </div>
       )}
 
-      {/* Crystal Window call controls — persistente durante TODA la partida,
-          no solo en el lobby, para que ambos humanos se vean en vivo */}
-      {/* Fase 1 videoconferencia: ANTES del primer lanzamiento se muestra la
-          miniatura del rival (VideoChat); AL tirar los dados por primera vez
-          la miniatura desaparece y el video del rival pasa a fondo (VideoLayer).
-          `gameStarted` se deriva de rollHistory (nunca se limpia) para no
-          confundir el vaciado de dados de fin de turno con el inicio. */}
-      {/* Crystal Window call controls — persistente durante TODA la partida,
-          no solo en el lobby, para que ambos humanos se vean en vivo.
-          En móvil se oculta la miniatura para dejar solo el fondo de video. */}
-      {isCrystalEnabled && !gameStarted && (
-        <div className="hidden md:block">
-          <VideoChat
-            localStream={localStream}
-            remoteStream={remoteStream}
-            connectionStatus={connectionStatus}
-            startCall={startCall}
-            toggleAudio={toggleAudio}
-            toggleVideo={toggleVideo}
-            hangUp={hangUp}
-            disabled={!isCrystalEnabled}
-          />
-        </div>
-      )}
+
 
       {/* H2H text chat overlay (persistente durante la partida).
-          En móvil se oculta por defecto para limpiar el fondo; se puede
-          seguir abriendo desde el control correspondiente si existe. */}
+          Visible on all devices. */}
       {initialMode === 'human' && (
-        <div className="hidden md:block">
-          <ChatPanel
-            messages={chat.messages}
-            isOpen={chat.isOpen}
-            onToggle={chat.toggleChat}
-            onSend={chat.sendChat}
-            connectionStatus={connectionStatus}
-          />
-        </div>
+        <ChatPanel
+          messages={chat.messages}
+          isOpen={chat.isOpen}
+          onToggle={chat.toggleChat}
+          onSend={chat.sendChat}
+          connectionStatus={connectionStatus}
+        />
       )}
 
       {showCalibration && (
@@ -2269,10 +2253,9 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       {/* Hand Tracking Layer (Background Video Only) or Crystal Video Layer */}
       {/* Z-0: Behind everything (Sidebar, Board, etc.) */}
       
-      {/* CASE 1: CRYSTAL WINDOW MODE — fondo solo una vez iniciada la partida
-          (tras el primer lanzamiento de dados); antes se muestra el VideoChat
-          miniatura del rival */}
-      {isCrystalEnabled && gameStarted && (
+      {/* CASE 1: CRYSTAL WINDOW MODE — remote video always in the background.
+          VideoLayer gracefully handles null stream (shows dark placeholder). */}
+      {isCrystalEnabled && (
          <VideoLayer 
             stream={remoteStream} 
             metrics={metrics}
@@ -2875,6 +2858,22 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* H2H Video Call Controls — floating bar centered at bottom of screen */}
+          {isCrystalEnabled && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center justify-center pointer-events-auto">
+              <VideoChat
+                localStream={localStream}
+                remoteStream={remoteStream}
+                connectionStatus={connectionStatus}
+                startCall={startCall}
+                toggleAudio={toggleAudio}
+                toggleVideo={toggleVideo}
+                hangUp={hangUp}
+                disabled={!isCrystalEnabled}
+              />
             </div>
           )}
       </main>
