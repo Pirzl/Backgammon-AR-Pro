@@ -7,7 +7,7 @@ import { fetchEvaluation, storeEvaluation } from "../ai-worker/api";
 import { supabase } from "../../shared/api/supabase";
 import type { GameState } from "../../entities/game/types";
 import { generateAllTurnSequences } from "../../entities/game/full-turn-generator";
-import { buildSkillContext } from "../ai-worker/skills";
+import { buildSkillContext, planForContext } from "../ai-worker/skills";
 import type { SkillContext, TacticalSkill } from "../ai-worker/skills";
 import { formatPositionSummary, formatLegalMovesSummary } from "../ai-worker/position-view";
 import { recordGeminiCall } from "./lib/geminiUsage";
@@ -445,7 +445,7 @@ export async function getGrandmasterMove(
       if (ENABLE_REFLECTIVE_OVERRIDE && effectiveDifficulty >= 9) {
         try {
           skillCtx = await buildSkillContext({ state: gameState, aiColor, board: boardState, dice });
-          reflectivePlan = (await import('../ai-worker/skills')).planForContext(skillCtx);
+          reflectivePlan = planForContext(skillCtx);
         } catch {
           reflectivePlan = [];
         }
