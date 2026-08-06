@@ -18,17 +18,19 @@ export default defineConfig({
         entryFileNames: `[name].js`,
         chunkFileNames: `[name].js`,
         assetFileNames: `[name].[ext]`,
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom'],
-          'vendor-ui': ['framer-motion', 'lucide-react'],
-          'vendor-utils': ['@supabase/supabase-js'],
-          // NOTE: @mediapipe/tasks-vision is intentionally excluded.
-          // The worker loads vision_bundle.js via importScripts from public/mediapipe/.
-          // Including it here causes Rollup to rename the 'exports' shim, breaking the worker.
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react') || id.includes('react-dom')) return 'vendor-react';
+            if (id.includes('framer-motion') || id.includes('lucide-react')) return 'vendor-ui';
+            if (id.includes('@supabase')) return 'vendor-utils';
+          }
+          if (id.includes('/src/features/hand-tracking/')) return 'feature-hand-tracking';
+          if (id.includes('/src/features/ai-worker/')) return 'feature-ai-engine';
+          if (id.includes('/src/entities/game/')) return 'feature-game-core';
         },
       },
     },
-    chunkSizeWarningLimit: 1000,
+    chunkSizeWarningLimit: 1200,
   },
   worker: {
     format: 'iife', // Classic worker compatibility (importScripts)
