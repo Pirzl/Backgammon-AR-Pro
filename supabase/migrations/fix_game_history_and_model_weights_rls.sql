@@ -39,12 +39,14 @@ COMMENT ON POLICY "Public can read game history for AI learning" ON public.game_
 COMMENT ON POLICY "Public can insert game history for AI learning" ON public.game_history_analysis
   IS 'Allows the game (unauthenticated) to record board snapshots per turn for AI learning.';
 
--- ── model_weights: drop authenticated-only write policies ────────────────────
+-- ── model_weights: keep shared-checkpoint write access for offline training ────
+
+-- Drop restrictive write policies from the original setup
 DROP POLICY IF EXISTS "Authenticated users can update model weights" ON model_weights;
 DROP POLICY IF EXISTS "Authenticated users can upsert model weights" ON model_weights;
 DROP POLICY IF EXISTS "Public can upsert model weights for AI training" ON model_weights;
 
--- NEW: anyone can insert/update the shared NN checkpoint
+-- Allow public insert/update for the shared NN checkpoint
 CREATE POLICY "Public can upsert model weights for AI training"
   ON model_weights
   FOR INSERT
@@ -59,3 +61,18 @@ COMMENT ON POLICY "Public can upsert model weights for AI training" ON model_wei
   IS 'Allows the offline training pipeline (unauthenticated Node) to persist the global NN checkpoint.';
 COMMENT ON POLICY "Public can update model weights for AI training" ON model_weights
   IS 'Allows the offline training pipeline to overwrite the global NN checkpoint with newer training.';
+
+-- ── model_weights: add idempotency guard for shared 'current' row ─────────────
+CREATE OR REPLACE FUNCTION public.upsert_model_weights(p_weights jsonb, p_trained_count integer, p_total_updates integer, p_games_played integer)
+RETURNS void AS $$
+BEGIN
+  INSERT INTO model_weights (id, weights, trained_count, total_updates, games_played, updated_at)
+  VALUES ('current', p_weights, COALESCE(p_trained_count, 0), COALESCE(p_total_updates, 0), COALESCE(p_games_played, 0), now())
+  ON CONFLICT (id) DO UPDATE
+  SET weights = EXCLUDED.weights,
+      trained_count = model_weights.trained_count + EXCLUDED.trained_count,
+      total_updates = model_weights.total_updates + EXCLUDED.total_updates,
+      games_played = model_weights.games_played + EXCLUDED.games_played,
+      updated_at = now();
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;

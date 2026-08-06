@@ -27,48 +27,46 @@ IS 'Allows authenticated users to save game results. Prevents anonymous spam.';
 -- 2. IMPROVE PROFILES RLS (Protect sensitive fields)
 -- ============================================================================
 
--- Check if sensitive columns exist (from CRM integration)
-DO $$
-BEGIN
-    -- If wallet_balance exists, restrict it
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'public' 
-        AND table_name = 'profiles' 
-        AND column_name = 'wallet_balance'
-    ) THEN
-        -- Drop overly permissive SELECT policy
-        DROP POLICY IF EXISTS "Public profiles are viewable by everyone." ON public.profiles;
-        
-        -- NEW: Public can view basic profile info only
-        CREATE POLICY "Public can view basic profiles" 
-        ON public.profiles
-        FOR SELECT
-        USING (true);
-        
-        -- Users can view their own full profile (including sensitive fields)
-        CREATE POLICY "Users can view own full profile" 
-        ON public.profiles
-        FOR SELECT
-        TO authenticated
-        USING (id = auth.uid());
-        
-        -- Admins can view all profiles
-        CREATE POLICY "Admins can view all profiles" 
-        ON public.profiles
-        FOR SELECT
-        TO authenticated
-        USING (
-            EXISTS (
-                SELECT 1 FROM public.profiles 
-                WHERE id = auth.uid() AND role = 'admin'
-            )
-        );
-        
-        COMMENT ON POLICY "Public can view basic profiles" ON public.profiles 
-        IS 'Public can see basic profile info. Sensitive fields (wallet_balance, internal_notes, kyc_status) are hidden.';
-    END IF;
-END $$;
+-- Drop overly permissive SELECT policy
+DROP POLICY IF EXISTS "Public profiles are viewable by everyone." ON public.profiles;
+
+-- NEW: Public can view basic profile info only
+CREATE POLICY "Public can view basic profiles" 
+ON public.profiles
+FOR SELECT
+USING (true);
+
+-- Users can view their own full profile (including sensitive fields)
+CREATE POLICY "Users can view own full profile" 
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (id = auth.uid());
+
+-- Prevent anon writes
+DROP POLICY IF EXISTS "Anyone can update profiles" ON public.profiles;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
+
+CREATE POLICY "Users can update own profile" 
+ON public.profiles
+FOR UPDATE
+TO authenticated
+USING (id = auth.uid());
+
+-- Admins can view all profiles
+CREATE POLICY "Admins can view all profiles" 
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (
+    EXISTS (
+        SELECT 1 FROM public.profiles 
+        WHERE id = auth.uid() AND role = 'admin'
+    )
+);
+
+COMMENT ON POLICY "Public can view basic profiles" ON public.profiles 
+IS 'Public can see basic profile info. Sensitive fields (wallet_balance, internal_notes, kyc_status) are hidden.';
 
 -- ============================================================================
 -- 3. ADD CUBE STATE PERSISTENCE TO MATCHES

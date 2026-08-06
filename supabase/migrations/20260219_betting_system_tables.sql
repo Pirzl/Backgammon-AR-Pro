@@ -21,36 +21,47 @@ CREATE INDEX IF NOT EXISTS idx_wallets_user ON public.wallets(user_id);
 -- RLS Policies
 ALTER TABLE public.wallets ENABLE ROW LEVEL SECURITY;
 
--- Users can view their own wallet
+-- Drop existing policies if any
 DROP POLICY IF EXISTS "Users can view own wallet" ON public.wallets;
+DROP POLICY IF EXISTS "Users can update own wallet" ON public.wallets;
+DROP POLICY IF EXISTS "System can create wallets" ON public.wallets;
+DROP POLICY IF EXISTS "Admins can view all wallets" ON public.wallets;
+
+-- Users can view their own wallet
 CREATE POLICY "Users can view own wallet"
     ON public.wallets FOR SELECT
     TO authenticated
     USING (user_id = auth.uid());
 
--- Users can update their own wallet (via functions only)
-DROP POLICY IF EXISTS "Users can update own wallet" ON public.wallets;
-CREATE POLICY "Users can update own wallet"
-    ON public.wallets FOR UPDATE
-    TO authenticated
-    USING (user_id = auth.uid())
-    WITH CHECK (user_id = auth.uid());
-
--- System can insert wallets (on user creation)
-DROP POLICY IF EXISTS "System can create wallets" ON public.wallets;
-CREATE POLICY "System can create wallets"
+-- Do NOT allow direct client writes: use server-side functions only
+CREATE POLICY "System can insert wallets"
     ON public.wallets FOR INSERT
     TO authenticated
     WITH CHECK (user_id = auth.uid());
 
+CREATE POLICY "System can update wallets"
+    ON public.wallets FOR UPDATE
+    TO authenticated
+    USING (
+        EXISTS (
+            SELECT 1 FROM public.profiles
+            WHERE id = auth.uid() AND role = 'admin'
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM public.profiles
+            WHERE id = auth.uid() AND role = 'admin'
+        )
+    );
+
 -- Admins can view all wallets
-DROP POLICY IF EXISTS "Admins can view all wallets" ON public.wallets;
 CREATE POLICY "Admins can view all wallets"
     ON public.wallets FOR SELECT
     TO authenticated
     USING (
         EXISTS (
-            SELECT 1 FROM public.profiles 
+            SELECT 1 FROM public.profiles
             WHERE id = auth.uid() AND role = 'admin'
         )
     );
@@ -210,11 +221,17 @@ CREATE OR REPLACE FUNCTION public.reserve_stake(
 RETURNS boolean AS $$
 DECLARE
     v_current_balance numeric;
+    v_caller uuid := auth.uid();
 BEGIN
+    IF v_caller IS NULL OR v_caller <> p_user_id THEN
+        RAISE EXCEPTION 'Unauthorized';
+    END IF;
+
     -- Get current balance
     SELECT saldo_actual INTO v_current_balance
     FROM public.wallets
-    WHERE user_id = p_user_id;
+    WHERE user_id = p_user_id
+    FOR UPDATE;
     
     -- Check if user has enough balance
     IF v_current_balance < p_amount THEN
@@ -290,8 +307,14 @@ DECLARE
     v_loser_wallet_before numeric;
     v_winner_wallet_after numeric;
     v_loser_wallet_after numeric;
+    v_caller uuid := auth.uid();
 BEGIN
-    -- Get match details
+    -- Only allow authenticated calls
+    IF v_caller IS NULL THEN
+        RAISE EXCEPTION 'Unauthorized';
+    END IF;
+
+    -- Get match details and enforce caller is a participant
     SELECT 
         player_white,
         player_black,
@@ -299,15 +322,27 @@ BEGIN
         stake_inicial,
         cube_value,
         win_method,
-        winner_payout
+        winner_payout,
+        status
     INTO v_match_record
     FROM public.matches
-    WHERE id = p_match_id AND status = 'finished';
-    
+    WHERE id = p_match_id
+      AND status = 'finished'
+      AND (player_white = v_caller OR player_black = v_caller);
+
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'Match not found or not finished';
+        RAISE EXCEPTION 'Match not found, not finished, or caller is not a participant';
     END IF;
-    
+
+    -- Idempotency: skip if already processed
+    IF EXISTS (
+        SELECT 1 FROM public.transactions
+        WHERE match_id = p_match_id
+          AND tipo IN ('win', 'loss')
+    ) THEN
+        RETURN;
+    END IF;
+
     -- Determine winner and loser
     v_winner_id := v_match_record.winner_id;
     v_loser_id := CASE 
@@ -315,32 +350,32 @@ BEGIN
         THEN v_match_record.player_black 
         ELSE v_match_record.player_white 
     END;
-    
+
     v_stake_inicial := COALESCE(v_match_record.stake_inicial, 100.00);
     v_cube_final := COALESCE(v_match_record.cube_value, 1);
     v_win_method := COALESCE(v_match_record.win_method, 'normal');
     v_total_payout := COALESCE(v_match_record.winner_payout, 0);
-    
+
     -- Get wallet balances before
     SELECT saldo_actual INTO v_winner_wallet_before FROM public.wallets WHERE user_id = v_winner_id;
     SELECT saldo_actual INTO v_loser_wallet_before FROM public.wallets WHERE user_id = v_loser_id;
-    
+
     -- Release reserved stake from both players
     UPDATE public.wallets
     SET saldo_reservado = saldo_reservado - v_stake_inicial * v_cube_final
     WHERE user_id IN (v_winner_id, v_loser_id);
-    
+
     -- Winner gets payout
     UPDATE public.wallets
     SET 
         saldo_actual = saldo_actual + v_total_payout,
         updated_at = now()
     WHERE user_id = v_winner_id;
-    
+
     -- Get wallet balances after
     SELECT saldo_actual INTO v_winner_wallet_after FROM public.wallets WHERE user_id = v_winner_id;
     SELECT saldo_actual INTO v_loser_wallet_after FROM public.wallets WHERE user_id = v_loser_id;
-    
+
     -- Create transaction for winner
     INSERT INTO public.transactions (
         match_id,
@@ -359,7 +394,7 @@ BEGIN
         v_winner_wallet_after,
         format('Won match: stake=%s, cube=%s, method=%s', v_stake_inicial, v_cube_final, v_win_method)
     );
-    
+
     -- Create transaction for loser
     INSERT INTO public.transactions (
         match_id,
