@@ -99,173 +99,150 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
     });
   }, []);
 
-  // Initialize Peer Connection & Signaling
-  useEffect(() => {
-    // Relaxed check: localStream is NOT required for Data Channel / Connection
-    // We only need the signaling channel and identity
+  // Build (or rebuild) the PeerConnection with all handlers + shared tracks.
+  // Called once on mount (via effect) AND by startCall after a hangUp closes
+  // the previous PC (F3 fix: lets the user re-enable the camera for a new call).
+  // Deliberately does NOT depend on localStream, so it does not re-run when the
+  // media stream arrives (avoids the F!3 teardown race).
+  const setupPeerConnection = useCallback((): RTCPeerConnection | null => {
     if (!roomId || !userId || !signalingChannel) {
-        console.log('[VideoChat] Skipping PC init. Missing deps:', { roomId, userId, hasSignaling: !!signalingChannel });
-        return;
+      console.log('[VideoChat] Skipping PC init. Missing deps:', { roomId, userId, hasSignaling: !!signalingChannel });
+      return null;
     }
 
-    console.log('[VideoChat] Initializing Peer Connection...');
-    const initPeerConnection = async () => {
-        // P0: TURN Credential Fetching (Metered, server-side via Edge Function).
-        // Without TURN, video fails over mobile/cellular (CGNAT) even though
-        // STUN alone is enough on the same LAN. If the Edge Function is missing
-        // TURN_API_KEY or the fetch fails, we gracefully fall back to STUN.
-        const turnConfig = resolveTurnConfig();
-        let iceServers = turnConfig.iceServers;
+    const turnConfig = resolveTurnConfig();
+    let iceServers = turnConfig.iceServers;
 
-        // RACE-FIX (F!3): The PeerConnection MUST be created synchronously
-        // BEFORE any `await`, otherwise the auto-triggered startCall (2s in
-        // GameBoard) can run while peerConnectionRef.current is still null and
-        // emit "PeerConnection not initialized". Note iceServers may still be
-        // updated after the fetch below via setConfiguration().
-        const pc = new RTCPeerConnection({ iceServers });
-        // Assign the ref NOW (synchronously) so the auto-triggered startCall
-        // never sees a null PeerConnection while the async TURN fetch is pending.
-        peerConnectionRef.current = pc;
+    // RACE-FIX (F!3): create the PC synchronously and assign the ref NOW,
+    // before any async TURN fetch, so startCall never sees a null PC.
+    const pc = new RTCPeerConnection({ iceServers });
+    peerConnectionRef.current = pc;
 
-        if (turnConfig.source === 'edge') {
-            try {
-                const turnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/turn-credentials`;
-                const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-                const res = await fetch(turnUrl, anonKey ? {
-                    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
-                } : undefined);
-                if (res.ok) {
-                    const creds = await res.json();
-                    const servers: RTCIceServer[] = Array.isArray(creds?.iceServers)
-                        ? creds.iceServers
-                        : [];
-                    if (servers.length > 0) {
-                        // Apply fetched TURN servers to the already-created PC.
-                        try { pc.setConfiguration({ iceServers: servers }); } catch { /* ignore */ }
-                        console.log('[VideoChat] Using TURN credentials from Edge Function');
-                    }
-                }
-            } catch (e) {
-                console.warn('[Security] TURN fetch failed, falling back to', turnConfig.source, e);
+    // Async TURN fetch (fire-and-forget). Applies credentials when ready.
+    if (turnConfig.source === 'edge') {
+      (async () => {
+        try {
+          const turnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/turn-credentials`;
+          const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+          const res = await fetch(turnUrl, anonKey ? {
+            headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
+          } : undefined);
+          if (res.ok) {
+            const creds = await res.json();
+            const servers: RTCIceServer[] = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
+            if (servers.length > 0) {
+              try { pc.setConfiguration({ iceServers: servers }); } catch { /* ignore */ }
+              console.log('[VideoChat] Using TURN credentials from Edge Function');
             }
-        } else if (turnConfig.source === 'override') {
-            console.log('[VideoChat] Using TURN override config');
-        } else {
-            console.log('[VideoChat] Using STUN-only fallback');
+          }
+        } catch (e) {
+          console.warn('[Security] TURN fetch failed, falling back to', turnConfig.source, e);
         }
+      })();
+    } else if (turnConfig.source === 'override') {
+      console.log('[VideoChat] Using TURN override config');
+    } else {
+      console.log('[VideoChat] Using STUN-only fallback');
+    }
 
-        // 1. Create PeerConnection (already done synchronously above)
-
-        // 2. Data Channel Setup (For receiving)
-        pc.ondatachannel = (event) => {
-            const receiveChannel = event.channel;
-            receiveChannel.onmessage = (e) => {
-                // P0: Validation could be added here for data channel messages too if they carry sensitive actions
-                // For cursor syncing, it's low risk, but good practice.
-                try {
-                    const data = JSON.parse(e.data);
-                    if (validateSignalPayload(data)) {
-                        const customEvent = new CustomEvent('vivo-data-message', { detail: data });
-                        window.dispatchEvent(customEvent);
-                    }
-                } catch { /* ignore invalid json */ }
-            };
-            dataChannelRef.current = receiveChannel;
-        };
-
-        // 3. Add Local Tracks (Only if available)
-        if (localStream) {
-            console.log('[VideoChat] Adding local tracks to PC');
-            localStream.getTracks().forEach(track => {
-                pc.addTrack(track, localStream);
-            });
-        } else {
-            console.log('[VideoChat] No local stream available. Proceeding with Data Channel only.');
-        }
-
-        // Shared camera may gain tracks later (e.g. audio added after video-only
-        // acquisition) — re-add any new tracks so the remote always gets them.
-        // IMPORTANT: never re-add the LOCAL video track while the user has
-        // muted outgoing video (videoMutedRef) — otherwise replaceTrack(null)
-        // would be undone and the camera would silently un-mute. The video
-        // track itself stays enabled=true so hand tracking keeps working.
-        const ensureSharedTracks = () => {
-            const shared = sharedCamera.getStream();
-            if (!shared || !peerConnectionRef.current) return;
-            const existing = new Set(peerConnectionRef.current.getSenders().map(s => s.track));
-            shared.getTracks().forEach((track) => {
-                if (track.kind === 'video' && videoMutedRef.current) return;
-                if (!existing.has(track)) {
-                    try {
-                        peerConnectionRef.current?.addTrack(track, shared);
-                    } catch (e) {
-                        console.warn('[VideoChat] Could not add late track:', e);
-                    }
-                }
-            });
-        };
-        ensureSharedTracks();
-        const unsubShared = sharedCamera.subscribe(ensureSharedTracks);
-        unsubscribeSharedRef.current = unsubShared;
-
-        // 3. Handle Remote Track
-        pc.ontrack = (event) => {
-            if (event.streams && event.streams[0]) {
-                setRemoteStream(event.streams[0]);
-            }
-        };
-
-        // 4. Handle ICE Candidates
-        pc.onicecandidate = (event) => {
-            if (event.candidate) {
-                signalingChannel?.broadcastMove({
-                    type: 'signal',
-                    target: 'peer',
-                    payload: { type: 'ice-candidate', candidate: event.candidate }
-                });
-            }
-        };
-
-        pc.onconnectionstatechange = () => {
-            setConnectionStatus(pc.connectionState);
-            // Reconnection: if the D2D/ICE link drops unexpectedly (not a
-            // deliberate hangup), request an ICE restart to re-establish media.
-            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-                console.warn('[VideoChat] Connection dropped; restarting ICE...');
-                try { pc.restartIce(); } catch (e) { console.warn('[VideoChat] restartIce failed (non-fatal):', e); }
-            }
-        };
-
-        // 5. Start Stats Loop (Observability)
-        const statsInterval = setInterval(async () => {
-            if (pc.connectionState !== 'connected') return;
-            const stats = await pc.getStats();
-            const newMetrics = { rtt: 0, packetLoss: 0, fps: 0, resolution: '0x0' };
-
-            stats.forEach(report => {
-                if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-                    newMetrics.rtt = report.currentRoundTripTime * 1000;
-                }
-                if (report.type === 'inbound-rtp' && report.kind === 'video') {
-                    newMetrics.packetLoss = report.packetsLost;
-                    newMetrics.fps = report.framesPerSecond;
-                    // Resolution logic typically requires parsing frameWidth/frameHeight from track stats or similar
-                }
-            });
-            setMetrics(prev => ({ ...prev, ...newMetrics }));
-        }, 1000);
-
-        // Cleanup stats on PC close
-        const originalClose = pc.close.bind(pc);
-        pc.close = () => {
-            clearInterval(statsInterval);
-            originalClose();
-        };
+    // 2. Data Channel Setup (For receiving)
+    pc.ondatachannel = (event) => {
+      const receiveChannel = event.channel;
+      receiveChannel.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (validateSignalPayload(data)) {
+            const customEvent = new CustomEvent('vivo-data-message', { detail: data });
+            window.dispatchEvent(customEvent);
+          }
+        } catch { /* ignore invalid json */ }
+      };
+      dataChannelRef.current = receiveChannel;
     };
 
-    initPeerConnection();
+    // Shared camera tracks (video + audio) are attached via ensureSharedTracks
+    // so we never fight over getUserMedia and the video track stays enabled
+    // (hand tracking keeps working). This replaces the old localStream addTrack.
+    const ensureSharedTracks = () => {
+      const shared = sharedCamera.getStream();
+      if (!shared || !peerConnectionRef.current) return;
+      const existing = new Set(peerConnectionRef.current.getSenders().map(s => s.track));
+      shared.getTracks().forEach((track) => {
+        if (track.kind === 'video' && videoMutedRef.current) return;
+        if (!existing.has(track)) {
+          try {
+            peerConnectionRef.current?.addTrack(track, shared);
+          } catch (e) {
+            console.warn('[VideoChat] Could not add late track:', e);
+          }
+        }
+      });
+    };
+    ensureSharedTracks();
+    const unsubShared = sharedCamera.subscribe(ensureSharedTracks);
+    unsubscribeSharedRef.current = unsubShared;
 
-    // 5. Cleanup
+    // 3. Handle Remote Track
+    pc.ontrack = (event) => {
+      if (event.streams && event.streams[0]) {
+        setRemoteStream(event.streams[0]);
+      }
+    };
+
+    // 4. Handle ICE Candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        signalingChannel?.broadcastMove({
+          type: 'signal',
+          target: 'peer',
+          payload: { type: 'ice-candidate', candidate: event.candidate }
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      setConnectionStatus(pc.connectionState);
+      // Reconnection: if the D2D/ICE link drops unexpectedly (not a
+      // deliberate hangup), request an ICE restart to re-establish media.
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        console.warn('[VideoChat] Connection dropped; restarting ICE...');
+        try { pc.restartIce(); } catch (e) { console.warn('[VideoChat] restartIce failed (non-fatal):', e); }
+      }
+    };
+
+    // 5. Start Stats Loop (Observability)
+    const statsInterval = setInterval(async () => {
+      if (pc.connectionState !== 'connected') return;
+      const stats = await pc.getStats();
+      const newMetrics = { rtt: 0, packetLoss: 0, fps: 0, resolution: '0x0' };
+
+      stats.forEach(report => {
+        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+          newMetrics.rtt = report.currentRoundTripTime * 1000;
+        }
+        if (report.type === 'inbound-rtp' && report.kind === 'video') {
+          newMetrics.packetLoss = report.packetsLost;
+          newMetrics.fps = report.framesPerSecond;
+        }
+      });
+      setMetrics(prev => ({ ...prev, ...newMetrics }));
+    }, 1000);
+
+    // Cleanup stats on PC close
+    const originalClose = pc.close.bind(pc);
+    pc.close = () => {
+      clearInterval(statsInterval);
+      originalClose();
+    };
+
+    return pc;
+  }, [roomId, userId, signalingChannel]);
+
+  // Initialize Peer Connection & Signaling
+  useEffect(() => {
+    setupPeerConnection();
+
+    // Cleanup
     return () => {
       if (unsubscribeSharedRef.current) {
         unsubscribeSharedRef.current();
@@ -273,11 +250,11 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
       }
       if (dataChannelRef.current) dataChannelRef.current.close();
       if (peerConnectionRef.current) {
-          peerConnectionRef.current.close();
-          peerConnectionRef.current = null;
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
       }
     };
-  }, [roomId, userId, signalingChannel]);
+  }, [setupPeerConnection]);
 
   // Handle Incoming Signals (Offer/Answer/ICE)
   const handleSignal = useCallback(async (data: SignalData) => {
@@ -374,12 +351,19 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
   // Initiator Logic (Call Button)
   const startCall = useCallback(async () => {
-    const pc = peerConnectionRef.current;
+    // F3 fix: if the previous call was hung up (PC closed/failed/null) or never
+    // initialized, rebuild the PeerConnection before creating a fresh offer.
+    let pc = peerConnectionRef.current;
+    if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+        console.log('[VideoChat] startCall: rebuilding closed/failed PC');
+        setupPeerConnection();
+        pc = peerConnectionRef.current;
+    }
     if (!pc) {
         console.error('[VideoChat] startCall failed: PeerConnection not initialized');
         return;
     }
-    
+
     // P0: Rate Limiting
     const now = Date.now();
     if (now - lastConnectionAttemptRef.current < 2000) {
@@ -389,8 +373,8 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
     lastConnectionAttemptRef.current = now;
 
     // Si en el ínterin ya negociamos (recibimos oferta del rival), no crear otra
-    if (pc.signalingState !== 'stable' || pc.connectionState === 'closed') {
-        console.warn('[VideoChat] startCall skipped: signaling state is', pc.signalingState, 'connection:', pc.connectionState);
+    if (pc.signalingState !== 'stable') {
+        console.warn('[VideoChat] startCall skipped: signaling state is', pc.signalingState);
         return;
     }
 
@@ -489,27 +473,44 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
       }
   }, [localStream]);
 
-  // Hang up the call (privacy): close the peer connection + data channel and
-  // disable local tracks, but KEEP the game running (realtime sync continues).
+  // Hang up the call (privacy): close the peer connection + data channel, but
+  // KEEP hand tracking alive and allow re-calling. F3 fix:
+  //  - We must NOT disable the shared VIDEO track (it freezes MediaPipe).
+  //  - We must NOT null out peerConnectionRef permanently (startCall would die).
+  //  - We only stop SENDING our video (replaceTrack(null) on video senders, like
+  //    toggleVideo) and disable the AUDIO track. The local video track stays
+  //    enabled=true so hand tracking keeps reading frames.
+  //  - The PC is closed (releases ICE) but startCall recreates it if needed.
   const hangUp = useCallback(() => {
-      console.log('[VideoChat] Hanging up call. Game continues via realtime sync.');
-      if (peerConnectionRef.current) {
+      console.log('[VideoChat] Hanging up call. Game + hand tracking continue.');
+      const pc = peerConnectionRef.current;
+      if (pc) {
+          // Stop sending our video to the peer, but keep the local track enabled
+          // for MediaPipe. Same approach as toggleVideo(false).
           try {
-              peerConnectionRef.current.close();
+              pc.getSenders().forEach((sender) => {
+                  if (sender.track?.kind === 'video') {
+                      try { sender.replaceTrack(null); } catch { /* ignore */ }
+                  }
+              });
+          } catch (e) {
+              console.warn('[VideoChat] hangUp replaceTrack error:', e);
+          }
+          // Disable only the audio track (micro). Video stays enabled.
+          const shared = sharedCamera.getStream();
+          shared?.getAudioTracks().forEach((t) => { try { t.enabled = false; } catch { /* ignore */ } });
+          try {
+              pc.close(); // releases ICE; startCall will recreate if needed
           } catch (e) {
               console.warn('[VideoChat] hangUp pc.close error:', e);
           }
-          peerConnectionRef.current = null;
       }
       if (dataChannelRef.current) {
           try { dataChannelRef.current.close(); } catch { /* ignore */ }
           dataChannelRef.current = null;
       }
-      if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach(track => {
-              try { track.enabled = false; } catch { /* ignore */ }
-          });
-      }
+      // Reset mute state so the next call starts unmuted (outgoing video on).
+      videoMutedRef.current = false;
       setRemoteStream(null);
       setConnectionStatus('closed');
       setMetrics({ rtt: 0, packetLoss: 0, fps: 0, resolution: '0x0' });
