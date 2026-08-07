@@ -10,16 +10,65 @@ interface ChatPanelProps {
   connectionStatus: RTCPeerConnectionState;
 }
 
+// Clave de posición por dispositivo (móvil/tablet/escritorio) para que cada
+// uno recuerde dónde dejó el panel.
+const POS_STORAGE_KEY = 'backgammon-vivo-chat-position';
+
+interface SavedPos {
+  x: number;
+  y: number;
+}
+
+function loadPos(): SavedPos | null {
+  try {
+    const raw = localStorage.getItem(POS_STORAGE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as SavedPos;
+    if (typeof p.x === 'number' && typeof p.y === 'number') return p;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function savePos(p: SavedPos) {
+  try {
+    localStorage.setItem(POS_STORAGE_KEY, JSON.stringify(p));
+  } catch { /* ignore */ }
+}
+
+function clamp(v: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, v));
+}
+
 export function ChatPanel({ messages, isOpen, onToggle, onSend, connectionStatus }: ChatPanelProps) {
   const [draft, setDraft] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Posición en px (esquina sup-izq del panel). null = usar posición por defecto.
+  const [pos, setPos] = useState<SavedPos | null>(() => loadPos());
+  const dragState = useRef<{ active: boolean; startX: number; startY: number; baseX: number; baseY: number }>({
+    active: false,
+    startX: 0,
+    startY: 0,
+    baseX: 0,
+    baseY: 0,
+  });
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [messages, isOpen]);
+
+  // Aplica la posición al montar y cuando cambie.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el || !pos) return;
+    el.style.left = `${pos.x}px`;
+    el.style.top = `${pos.y}px`;
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+  }, [pos]);
 
   const connected = connectionStatus === 'connected';
 
@@ -29,6 +78,49 @@ export function ChatPanel({ messages, isOpen, onToggle, onSend, connectionStatus
     const ok = onSend(text);
     if (ok) setDraft('');
   }, [draft, connected, onSend]);
+
+  // --- Drag por la cabecera (pointer events: funciona en móvil y PC) ---
+  const onHeaderPointerDown = useCallback((e: React.PointerEvent) => {
+    const el = panelRef.current;
+    if (!el) return;
+    e.preventDefault();
+    const rect = el.getBoundingClientRect();
+    const cur = pos ?? { x: rect.left, y: rect.top };
+    dragState.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      baseX: cur.x,
+      baseY: cur.y,
+    };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  }, [pos]);
+
+  const onHeaderPointerMove = useCallback((e: React.PointerEvent) => {
+    const d = dragState.current;
+    if (!d.active) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = panelRef.current?.offsetWidth ?? 288;
+    const h = panelRef.current?.offsetHeight ?? 288;
+    const nx = clamp(d.baseX + dx, 0, Math.max(0, vw - w));
+    const ny = clamp(d.baseY + dy, 0, Math.max(0, vh - h));
+    setPos({ x: nx, y: ny });
+  }, []);
+
+  const endDrag = useCallback((e: React.PointerEvent) => {
+    const d = dragState.current;
+    if (!d.active) return;
+    d.active = false;
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+    setPos((p) => {
+      const next = p ?? { x: 0, y: 0 };
+      savePos(next);
+      return next;
+    });
+  }, []);
 
   if (!isOpen) {
     return (
@@ -48,9 +140,19 @@ export function ChatPanel({ messages, isOpen, onToggle, onSend, connectionStatus
   }
 
   return (
-    <div className="fixed bottom-52 right-2 z-50 w-72 max-w-[calc(100vw-1rem)] h-72 rounded-xl bg-black/85 backdrop-blur-md border border-white/10 flex flex-col overflow-hidden shadow-2xl">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 bg-white/5 border-b border-white/10">
+    <div
+      ref={panelRef}
+      style={pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : undefined}
+      className="fixed bottom-52 right-2 z-50 w-72 max-w-[calc(100vw-1rem)] h-72 rounded-xl bg-black/85 backdrop-blur-md border border-white/10 flex flex-col overflow-hidden shadow-2xl"
+    >
+      {/* Header (arrástralo para mover el panel) */}
+      <div
+        onPointerDown={onHeaderPointerDown}
+        onPointerMove={onHeaderPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        className="flex items-center justify-between px-3 py-2 bg-white/5 border-b border-white/10 cursor-grab active:cursor-grabbing touch-none select-none"
+      >
         <span className="text-xs uppercase font-bold tracking-widest text-white/70">Chat</span>
         <button onClick={onToggle} title="Cerrar" className="text-white/60 hover:text-white transition-colors">
           <X size={14} />

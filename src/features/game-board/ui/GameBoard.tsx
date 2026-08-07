@@ -749,7 +749,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
     const saved = localStorage.getItem('vivo_hand_tracking_enabled');
     return saved === 'true';
   });
-  const { stopCamera, startCamera } = useCamera({ shared: true });
+  // In H2H we request audio together with the shared camera so the mic track
+  // lives in the SAME single getUserMedia stream (no second prompt, no broken
+  // micro). Mode IA/training keeps audio:false (no mic needed).
+  const { stopCamera, startCamera } = useCamera({ shared: true, audio: initialMode === 'human' });
 
   // Camera permission explainer (E / AR-UX): shown BEFORE the camera starts,
   // so the user explicitly allows it. Never auto-starts the camera.
@@ -2196,7 +2199,7 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       )}
 
       {initialMode === 'human' && !isOpponentPresent && connectionStatus !== 'connected' && !state.winner && !opponentAbandoned && !insufficientFunds && (
-        <div className="absolute inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+        <div className="absolute inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none">
           {hasGameStarted ? (
             // Mid-game disconnect — opponent WAS here but left
             <div className="bg-panel border border-amber-500/30 p-8 rounded-2xl max-w-md text-center shadow-[0_0_40px_rgba(245,158,11,0.2)]">

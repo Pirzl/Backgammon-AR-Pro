@@ -39,6 +39,11 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]); // NEW: Queue for early candidates
   const unsubscribeSharedRef = useRef<(() => void) | null>(null);
+  // Tracks whether the LOCAL outgoing video is muted (camera button). Lets
+  // ensureSharedTracks avoid re-attaching the video track while the user
+  // intentionally muted it. NEVER touches track.enabled (that would freeze
+  // the shared camera / hand tracking).
+  const videoMutedRef = useRef(false);
   
   // Rate limiting for connection attempts
   const lastConnectionAttemptRef = useRef<number>(0);
@@ -111,6 +116,17 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
         // TURN_API_KEY or the fetch fails, we gracefully fall back to STUN.
         const turnConfig = resolveTurnConfig();
         let iceServers = turnConfig.iceServers;
+
+        // RACE-FIX (F!3): The PeerConnection MUST be created synchronously
+        // BEFORE any `await`, otherwise the auto-triggered startCall (2s in
+        // GameBoard) can run while peerConnectionRef.current is still null and
+        // emit "PeerConnection not initialized". Note iceServers may still be
+        // updated after the fetch below via setConfiguration().
+        const pc = new RTCPeerConnection({ iceServers });
+        // Assign the ref NOW (synchronously) so the auto-triggered startCall
+        // never sees a null PeerConnection while the async TURN fetch is pending.
+        peerConnectionRef.current = pc;
+
         if (turnConfig.source === 'edge') {
             try {
                 const turnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/turn-credentials`;
@@ -124,7 +140,8 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
                         ? creds.iceServers
                         : [];
                     if (servers.length > 0) {
-                        iceServers = servers;
+                        // Apply fetched TURN servers to the already-created PC.
+                        try { pc.setConfiguration({ iceServers: servers }); } catch { /* ignore */ }
                         console.log('[VideoChat] Using TURN credentials from Edge Function');
                     }
                 }
@@ -137,8 +154,7 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
             console.log('[VideoChat] Using STUN-only fallback');
         }
 
-        // 1. Create PeerConnection
-        const pc = new RTCPeerConnection({ iceServers });
+        // 1. Create PeerConnection (already done synchronously above)
 
         // 2. Data Channel Setup (For receiving)
         pc.ondatachannel = (event) => {
@@ -169,11 +185,16 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
 
         // Shared camera may gain tracks later (e.g. audio added after video-only
         // acquisition) — re-add any new tracks so the remote always gets them.
+        // IMPORTANT: never re-add the LOCAL video track while the user has
+        // muted outgoing video (videoMutedRef) — otherwise replaceTrack(null)
+        // would be undone and the camera would silently un-mute. The video
+        // track itself stays enabled=true so hand tracking keeps working.
         const ensureSharedTracks = () => {
             const shared = sharedCamera.getStream();
             if (!shared || !peerConnectionRef.current) return;
             const existing = new Set(peerConnectionRef.current.getSenders().map(s => s.track));
             shared.getTracks().forEach((track) => {
+                if (track.kind === 'video' && videoMutedRef.current) return;
                 if (!existing.has(track)) {
                     try {
                         peerConnectionRef.current?.addTrack(track, shared);
@@ -234,8 +255,6 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
             setMetrics(prev => ({ ...prev, ...newMetrics }));
         }, 1000);
 
-        peerConnectionRef.current = pc;
-
         // Cleanup stats on PC close
         const originalClose = pc.close.bind(pc);
         pc.close = () => {
@@ -258,7 +277,7 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
           peerConnectionRef.current = null;
       }
     };
-  }, [roomId, userId, localStream, signalingChannel]);
+  }, [roomId, userId, signalingChannel]);
 
   // Handle Incoming Signals (Offer/Answer/ICE)
   const handleSignal = useCallback(async (data: SignalData) => {
@@ -422,17 +441,45 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
   }, []);
 
   // Media Controls (Privacy)
+  // Microphone: enable/disable the AUDIO track on the shared stream. This never
+  // touches the video track, so hand tracking is unaffected. The audio track is
+  // guaranteed to exist via sharedCamera.ensureAudio (see F4 in the fix notes).
   const toggleAudio = useCallback((enabled: boolean) => {
-      if (localStream) {
-          localStream.getAudioTracks().forEach(track => track.enabled = enabled);
+      const stream = localStream || sharedCamera.getStream();
+      if (stream) {
+          stream.getAudioTracks().forEach(track => { track.enabled = enabled; });
+      } else {
+          console.warn('[VideoChat] toggleAudio: no local stream yet');
       }
   }, [localStream]);
 
+  // Camera (outgoing video) mute/unmute.
+  // Uses RTCRtpSender.replaceTrack(null) so the LOCAL video track stays
+  // enabled=true and the hand tracking (MediaPipe) keeps reading frames.
+  // Unlike track.enabled=false, this only stops SENDING our video to the peer
+  // (they see black), without freezing our own tracking. Re-enabling restores
+  // the same track. This is the safe fix that preserves hand tracking (F2).
   const toggleVideo = useCallback((enabled: boolean) => {
-      if (localStream) {
-          localStream.getVideoTracks().forEach(track => track.enabled = enabled);
+      const pc = peerConnectionRef.current;
+      if (!pc) {
+          console.warn('[VideoChat] toggleVideo: no PeerConnection');
+          return;
       }
-  }, [localStream]);
+      const videoTrack = sharedCamera.getStream()?.getVideoTracks()[0] ?? null;
+      videoMutedRef.current = !enabled;
+      pc.getSenders().forEach((sender) => {
+          if (sender.track?.kind === 'video') {
+              try {
+                  sender.replaceTrack(enabled ? videoTrack : null);
+              } catch (e) {
+                  console.warn('[VideoChat] replaceTrack failed:', e);
+              }
+          }
+      });
+      // If the connection wasn't up yet and the track wasn't attached, the next
+      // ensureSharedTracks (subscribed in the PC-init effect) will respect
+      // videoMutedRef and skip the video track until unmuted.
+  }, []);
 
   // Full Revocation (Privacy): disable tracks instead of stopping hardware,
   // because the camera is SHARED with hand tracking.

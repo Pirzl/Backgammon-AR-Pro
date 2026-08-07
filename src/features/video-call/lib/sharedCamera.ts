@@ -34,6 +34,12 @@ class SharedCamera {
   private callRefCount = 0;
   private trackingRefCount = 0;
   private creating: Promise<MediaStream | null> | null = null;
+  // En móvil H2H el tracking arranca antes que la llamada y pide audio:false,
+  // con lo que el stream ÚNICO nace sin micro y luego hay que hacer un SEGUNDO
+  // getUserMedia (que en móvil suele fallar). Este flag recuerda que alguien
+  // pidió audio para forzar audio:true en el getUserMedia único aunque el
+  // primer acquire haya venido sin audio.
+  private wantAudio = false;
   private listeners = new Set<Listener>();
 
   subscribe(fn: Listener): () => void {
@@ -60,15 +66,25 @@ class SharedCamera {
       this.callRefCount++;
     }
 
+    // Si alguien pide audio en CUALQUIER acquire, lo recordamos para que el
+    // getUserMedia ÚNICO (que crea el stream compartido) incluya micro y así
+    // evitar un segundo getUserMedia en móvil (que suele fallar).
+    if (opts.audio) {
+      this.wantAudio = true;
+    }
+
     // Crea el stream ÚNICO la primera vez (cualquier modo); los siguientes
     // acquire REUTILIZAN el mismo stream — nunca un segundo getUserMedia.
     if (!this.stream) {
       if (!this.creating) {
-        this.creating = this.create(opts.video ?? true, opts.audio ?? false, opts.deviceId);
+        // Incluimos audio cuando lo haya pedido cualquier consumidor, no solo
+        // el primer acquire. Así el micro vive en el mismo stream que el vídeo.
+        this.creating = this.create(opts.video ?? true, this.wantAudio, opts.deviceId);
       }
       await this.creating;
       this.creating = null;
-    } else if (mode === 'call' && opts.audio) {
+    } else if (mode === 'call' && opts.audio && !this.audioTrack) {
+      // Fallback solo si, por algún motivo, el stream ya existía sin micro.
       await this.ensureAudio();
     }
     return this.stream;
@@ -125,7 +141,9 @@ class SharedCamera {
 
       const constraints: MediaStreamConstraints = {
         video: video ? videoConstraints : false,
-        audio: audio, // Solo el PRIMER acquire (normalmente call) pide audio
+        // El micro vive en el MISMO getUserMedia que el vídeo (audio === true
+        // cuando wantAudio). Nunca un segundo getUserMedia en móvil.
+        audio,
       };
 
       const s = await navigator.mediaDevices.getUserMedia(constraints);

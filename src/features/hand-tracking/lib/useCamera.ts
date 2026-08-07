@@ -27,6 +27,13 @@ export interface UseCameraOptions {
    * El stream NO se detiene al soltarlo si la llamada sigue activa.
    */
   shared?: boolean;
+  /**
+   * Request the microphone together with the shared camera stream. In H2H we
+   * set this to true so the mic track lives in the SAME single getUserMedia as
+   * the video (no second prompt). The audio track is added to the shared
+   * stream and never affects the video track / hand tracking.
+   */
+  audio?: boolean;
 }
 
 export function useCamera(_options: UseCameraOptions = {}) {
@@ -116,7 +123,7 @@ export function useCamera(_options: UseCameraOptions = {}) {
         initInProgressRef.current = true;
 
         const newStream = shared
-          ? await sharedCamera.acquire({ video: true, audio: false, deviceId, mode: 'tracking' })
+          ? await sharedCamera.acquire({ video: true, audio: !!_options.audio, deviceId, mode: 'tracking' })
           : await navigator.mediaDevices.getUserMedia({
               video: {
                 deviceId: deviceId ? { ideal: deviceId } : undefined,
