@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MessageCircle, Send, X } from 'lucide-react';
 import { MAX_CHAT_MESSAGE_LENGTH, type ChatMessage } from '../lib/useChat';
 
@@ -123,7 +124,7 @@ export function ChatPanel({ messages, isOpen, onToggle, onSend, connectionStatus
   }, []);
 
   if (!isOpen) {
-    return (
+    return createPortal(
       <button
         onClick={onToggle}
         title="Chat"
@@ -135,11 +136,12 @@ export function ChatPanel({ messages, isOpen, onToggle, onSend, connectionStatus
             {messages.length}
           </span>
         )}
-      </button>
+      </button>,
+      document.body
     );
   }
 
-  return (
+  return createPortal(
     <div
       ref={panelRef}
       style={pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : undefined}
@@ -206,6 +208,7 @@ export function ChatPanel({ messages, isOpen, onToggle, onSend, connectionStatus
           <Send size={14} />
         </button>
       </form>
-    </div>
+    </div>,
+    document.body
   );
 }
