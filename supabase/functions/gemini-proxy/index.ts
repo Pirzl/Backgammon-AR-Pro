@@ -4,7 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent";
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent";
 
 // Global daily counter (shared across all players). The free tier RPD quota is
 // per API key, so the source of truth must live server-side, not in localStorage.
@@ -98,11 +98,31 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      throw new Error(`Gemini API returned ${geminiResponse.status}`);
+      // Surface the real upstream status so callers can distinguish a bad model
+      // name (400) from a server outage (5xx) instead of a generic 500.
+      return new Response(
+        JSON.stringify({ error: `Gemini API returned ${geminiResponse.status}`, detail: errText.slice(0, 500) }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const data = await geminiResponse.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    // Defensive: Gemini may return a 200 with an empty body (e.g. a non-existent
+    // model or a transient edge hiccup). Read text first; only parse if present,
+    // so we never crash with "Unexpected end of JSON input".
+    const rawText = await geminiResponse.text();
+    if (!rawText.trim()) {
+      console.error("Gemini API returned an empty body despite 200 OK");
+      throw new Error("Empty AI response");
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      console.error("Gemini API returned non-JSON body:", rawText.slice(0, 500));
+      throw new Error("Invalid AI response format");
+    }
+
+    const text = (data as { candidates?: { content?: { parts?: { text?: string }[] } }[] })?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!text) throw new Error("Empty AI response");
 

@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY")!
-const GEMINI_MODEL = "gemini-3.5-flash-lite"
+const GEMINI_MODEL = "gemini-2.0-flash-lite"
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
