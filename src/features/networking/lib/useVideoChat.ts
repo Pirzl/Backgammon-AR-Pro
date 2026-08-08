@@ -171,27 +171,15 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
       dataChannelRef.current = receiveChannel;
     };
 
-    // F4 fix: renegotiate when a track is added to the PC after the initial
-    // offer/answer (e.g. the audio track appears on the shared stream later, or
-    // a late video track). Without this, the peer never receives the new media
-    // track. We only auto-renegotiate once the call is already connected —
-    // the INITIAL offer is created by startCall (avoids glare at setup).
-    pc.onnegotiationneeded = async () => {
-      if (!pc || pc.connectionState === 'closed') return;
-      if (pc.connectionState !== 'connected' || pc.signalingState !== 'stable') return;
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        signalingChannel?.broadcastMove({
-          type: 'signal',
-          target: 'peer',
-          payload: { type: 'offer', sdp: offer }
-        });
-        console.log('[VideoChat] Renegotiating for late-added track');
-      } catch (e) {
-        console.warn('[VideoChat] onnegotiationneeded failed:', e);
-      }
-    };
+    // NOTE (F-H2H fix): we intentionally do NOT attach `pc.onnegotiationneeded`.
+    // Monky's auto-renegotiation fired when `ensureSharedTracks` added the audio
+    // track a moment after the initial offer, producing a new offer whose m-line
+    // order no longer matched the first one -> the peer rejected it with
+    // `InvalidAccessError: order of m-lines ... doesn't match` and the call died
+    // (no remote ontrack, no data channel -> no video/audio/chat).
+    // Audio + video are already added up-front by `ensureSharedTracks()` just
+    // below (line ~214), so the FIRST offer already contains both tracks with a
+    // stable m-line order. No renegotiation is needed.
 
     // Shared camera tracks (video + audio) are attached via ensureSharedTracks
     // so we never fight over getUserMedia and the video track stays enabled
