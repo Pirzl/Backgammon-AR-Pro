@@ -186,18 +186,23 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
     // (hand tracking keeps working). This replaces the old localStream addTrack.
     const ensureSharedTracks = () => {
       const shared = sharedCamera.getStream();
-      if (!shared || !peerConnectionRef.current) return;
-      const existing = new Set(peerConnectionRef.current.getSenders().map(s => s.track));
-      shared.getTracks().forEach((track) => {
-        if (track.kind === 'video' && videoMutedRef.current) return;
-        if (!existing.has(track)) {
-          try {
-            peerConnectionRef.current?.addTrack(track, shared);
-          } catch (e) {
-            console.warn('[VideoChat] Could not add late track:', e);
-          }
-        }
-      });
+      const pc = peerConnectionRef.current;
+      if (!shared || !pc) return;
+      const senders = pc.getSenders();
+      const hasVideo = senders.some((s) => s.track?.kind === 'video');
+      const hasAudio = senders.some((s) => s.track?.kind === 'audio');
+      const videoTrack = shared.getVideoTracks()[0] ?? null;
+      const audioTrack = shared.getAudioTracks()[0] ?? null;
+      // Orden determinista de m-lines: VIDEO primero, luego AUDIO, para que
+      // iniciador y answerer coincidan. Un orden distinto entre peers provoca
+      // mismatch de m-lines -> "Failed to start SCTP transport" y audio remoto
+      // mudo (el m-line de audio, en el medio, no se empareja).
+      if (videoTrack && !hasVideo && !videoMutedRef.current) {
+        try { pc.addTrack(videoTrack, shared); } catch (e) { console.warn('[VideoChat] add video failed:', e); }
+      }
+      if (audioTrack && !hasAudio) {
+        try { pc.addTrack(audioTrack, shared); } catch (e) { console.warn('[VideoChat] add audio failed:', e); }
+      }
     };
     ensureSharedTracks();
     const unsubShared = sharedCamera.subscribe(ensureSharedTracks);
