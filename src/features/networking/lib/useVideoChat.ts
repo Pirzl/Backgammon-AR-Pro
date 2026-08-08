@@ -110,6 +110,17 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
       return null;
     }
 
+    // Cleanup a previous PC (re-created after hangUp/failure) so we never leak
+    // shared-camera subscriptions or stats intervals. F3-gap: without this,
+    // every startCall/handleSignal rebuild would stack listeners.
+    if (unsubscribeSharedRef.current) {
+      unsubscribeSharedRef.current();
+      unsubscribeSharedRef.current = null;
+    }
+    if (peerConnectionRef.current && peerConnectionRef.current.connectionState !== 'closed') {
+      try { peerConnectionRef.current.close(); } catch { /* ignore */ }
+    }
+
     const turnConfig = resolveTurnConfig();
     let iceServers = turnConfig.iceServers;
 
@@ -158,6 +169,28 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
         } catch { /* ignore invalid json */ }
       };
       dataChannelRef.current = receiveChannel;
+    };
+
+    // F4 fix: renegotiate when a track is added to the PC after the initial
+    // offer/answer (e.g. the audio track appears on the shared stream later, or
+    // a late video track). Without this, the peer never receives the new media
+    // track. We only auto-renegotiate once the call is already connected —
+    // the INITIAL offer is created by startCall (avoids glare at setup).
+    pc.onnegotiationneeded = async () => {
+      if (!pc || pc.connectionState === 'closed') return;
+      if (pc.connectionState !== 'connected' || pc.signalingState !== 'stable') return;
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        signalingChannel?.broadcastMove({
+          type: 'signal',
+          target: 'peer',
+          payload: { type: 'offer', sdp: offer }
+        });
+        console.log('[VideoChat] Renegotiating for late-added track');
+      } catch (e) {
+        console.warn('[VideoChat] onnegotiationneeded failed:', e);
+      }
     };
 
     // Shared camera tracks (video + audio) are attached via ensureSharedTracks
@@ -266,7 +299,16 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
         return;
     }
 
-    const pc = peerConnectionRef.current;
+    // F3-gap fix: the PC may be null, closed or failed (e.g. after hangUp or an
+    // ICE failure). If so, rebuild it BEFORE processing the incoming offer —
+    // otherwise a remote re-call would be rejected because signalingState on a
+    // closed PC is 'closed' (never 'stable') and the offer gets dropped.
+    let pc = peerConnectionRef.current;
+    if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+        console.log('[VideoChat] handleSignal: rebuilding closed/failed/null PC');
+        setupPeerConnection();
+        pc = peerConnectionRef.current;
+    }
     if (!pc) {
         console.warn('[VideoChat] handleSignal ignored: PeerConnection not initialized');
         return;
@@ -347,7 +389,7 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
     } catch (err) {
       console.error('Signaling Error:', err);
     }
-  }, [signalingChannel]);
+  }, [signalingChannel, setupPeerConnection]);
 
   // Initiator Logic (Call Button)
   const startCall = useCallback(async () => {
@@ -404,7 +446,7 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
       target: 'peer',
       payload: { type: 'offer', sdp: offer }
     });
-  }, [signalingChannel]);
+  }, [signalingChannel, setupPeerConnection]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sendData = useCallback((data: any): boolean => {
@@ -451,10 +493,15 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
       }
       const videoTrack = sharedCamera.getStream()?.getVideoTracks()[0] ?? null;
       videoMutedRef.current = !enabled;
-      pc.getSenders().forEach((sender) => {
-          if (sender.track?.kind === 'video') {
+      // IMPORTANT (F2/F5): after replaceTrack(null) the sender's track is null,
+      // so checking `sender.track?.kind === 'video'` never matches again and the
+      // camera can NEVER be re-enabled. Instead iterate the transceivers: the
+      // receiver keeps its kind even while the sender is nulled.
+      pc.getTransceivers().forEach((transceiver) => {
+          const kind = transceiver.sender.track?.kind ?? transceiver.receiver.track?.kind;
+          if (kind === 'video') {
               try {
-                  sender.replaceTrack(enabled ? videoTrack : null);
+                  transceiver.sender.replaceTrack(enabled ? videoTrack : null);
               } catch (e) {
                   console.warn('[VideoChat] replaceTrack failed:', e);
               }
@@ -477,28 +524,31 @@ export function useVideoChat({ roomId, userId, signalingChannel, enabled = true 
   // KEEP hand tracking alive and allow re-calling. F3 fix:
   //  - We must NOT disable the shared VIDEO track (it freezes MediaPipe).
   //  - We must NOT null out peerConnectionRef permanently (startCall would die).
-  //  - We only stop SENDING our video (replaceTrack(null) on video senders, like
-  //    toggleVideo) and disable the AUDIO track. The local video track stays
-  //    enabled=true so hand tracking keeps reading frames.
+  //  - We stop SENDING our video+audio (replaceTrack(null) on senders, like
+  //    toggleVideo), so the peer hears/sees nothing, but the LOCAL tracks stay
+  //    enabled=true (hand tracking keeps reading frames; the mic is live again
+  //    on the next call).
   //  - The PC is closed (releases ICE) but startCall recreates it if needed.
   const hangUp = useCallback(() => {
       console.log('[VideoChat] Hanging up call. Game + hand tracking continue.');
       const pc = peerConnectionRef.current;
       if (pc) {
-          // Stop sending our video to the peer, but keep the local track enabled
-          // for MediaPipe. Same approach as toggleVideo(false).
+          // Stop sending our video+audio to the peer, but keep the LOCAL tracks
+          // enabled (video for MediaPipe, audio so the mic is live again on the
+          // next call). Same replaceTrack(null) approach as toggleVideo(false).
+          // F4 fix: never set the shared audio track enabled=false here — that
+          // disables the mic persistently (a re-call would be silent even though
+          // the UI shows the mic as on). replaceTrack(null) stops the peer from
+          // hearing us without touching the shared track's enabled state.
           try {
               pc.getSenders().forEach((sender) => {
-                  if (sender.track?.kind === 'video') {
+                  if (sender.track?.kind === 'video' || sender.track?.kind === 'audio') {
                       try { sender.replaceTrack(null); } catch { /* ignore */ }
                   }
               });
           } catch (e) {
               console.warn('[VideoChat] hangUp replaceTrack error:', e);
           }
-          // Disable only the audio track (micro). Video stays enabled.
-          const shared = sharedCamera.getStream();
-          shared?.getAudioTracks().forEach((t) => { try { t.enabled = false; } catch { /* ignore */ } });
           try {
               pc.close(); // releases ICE; startCall will recreate if needed
           } catch (e) {
