@@ -4,6 +4,9 @@ import react from '@vitejs/plugin-react-swc'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Relative base so the built assets resolve no matter if deployed at the
+  // domain root or inside a subfolder (InfinityFree / free.nf hosting).
+  base: './',
   plugins: [react()],
   server: {
     host: '0.0.0.0',
