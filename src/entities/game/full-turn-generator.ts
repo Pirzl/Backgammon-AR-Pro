@@ -17,7 +17,8 @@ export function generateAllTurnSequences(
   board: number[],
   dice: number[],
   player: PlayerColor,
-  usedDice: number[] = []
+  usedDice: number[] = [],
+  maxSequences: number = MAX_SEQUENCES,
 ): Move[][] {
   const results: Move[][] = [];
   const seenFinal = new Set<string>();
@@ -27,7 +28,7 @@ export function generateAllTurnSequences(
     currentMoves: Move[],
     currentUsed: number[]
   ): void {
-    if (results.length >= MAX_SEQUENCES) return;
+    if (results.length >= maxSequences) return;
 
     const available = getAvailableDice(dice, currentUsed);
     if (available.length === 0) {
@@ -66,7 +67,7 @@ export function generateAllTurnSequences(
     const seenAfterMove = new Set<string>();
 
     for (const move of legalMoves) {
-      if (results.length >= MAX_SEQUENCES) return;
+      if (results.length >= maxSequences) return;
 
       const newBoard = applyMove(currentBoard, move, player);
       const afterKey = boardKey(newBoard);

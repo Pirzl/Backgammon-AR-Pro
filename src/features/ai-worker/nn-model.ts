@@ -13,6 +13,7 @@ export class AINNModel {
   private loaded: boolean = false;
   private trainedCount: number = 0;
   private totalWeightUpdates: number = 0;
+  private fitQueue: Promise<void> = Promise.resolve();
 
   async ensureModel(): Promise<tf.LayersModel> {
     if (this.model) return this.model;
@@ -60,37 +61,65 @@ export class AINNModel {
     });
   }
 
-  async trainOnGame(examples: TrainingExample[]): Promise<void> {
+  /**
+   * Evaluate many boards in a single forward pass (self-play / tournament move
+   * selection). Much cheaper than n sequential evaluate() calls on the CPU
+   * backend. Returns one raw prediction per board, in input order.
+   */
+  async evaluateBatch(boards: number[][], turns: PlayerColor[]): Promise<Float32Array> {
+    if (boards.length === 0) return new Float32Array(0);
+    if (!this.loaded) await this.ensureModel();
+    if (!this.model) return new Float32Array(boards.length);
+    const xs: number[][] = new Array(boards.length);
+    for (let i = 0; i < boards.length; i++) xs[i] = this.encodeBoard(boards[i]!, turns[i]!);
+    return tf.tidy(() => {
+      const inputTensor = tf.tensor2d(xs);
+      const prediction = this.model!.predict(inputTensor) as tf.Tensor;
+      return prediction.dataSync() as Float32Array;
+    });
+  }
+
+  async trainOnGame(examples: TrainingExample[], epochs = 5): Promise<void> {
     if (examples.length === 0) return;
     if (!this.loaded) await this.ensureModel();
     if (!this.model) return;
 
-    const xs: number[][] = [];
-    const ys: number[][] = [];
+    // tfjs LayersModel.fit is single-flight. Serialize all fits through a queue
+    // so concurrent callers cannot throw "another fit() call is ongoing".
+    const run = async () => {
+      const xs: number[][] = [];
+      const ys: number[][] = [];
 
-    for (const ex of examples) {
-      xs.push(this.encodeBoard(ex.board, ex.turn));
-      ys.push([Math.max(-1, Math.min(1, ex.target))]);
-    }
+      for (const ex of examples) {
+        xs.push(this.encodeBoard(ex.board, ex.turn));
+        ys.push([Math.max(-1, Math.min(1, ex.target))]);
+      }
 
-    const xsTensor = tf.tensor2d(xs);
-    const ysTensor = tf.tensor2d(ys);
+      const xsTensor = tf.tensor2d(xs);
+      const ysTensor = tf.tensor2d(ys);
 
-    const result = await this.model.fit(xsTensor, ysTensor, {
-      epochs: 5,
-      batchSize: Math.min(64, examples.length),
-      shuffle: true,
-      verbose: 0,
-    });
+      try {
+        const result = await this.model!.fit(xsTensor, ysTensor, {
+          epochs,
+          batchSize: Math.min(64, examples.length),
+          shuffle: true,
+          verbose: 0,
+        });
 
-    xsTensor.dispose();
-    ysTensor.dispose();
+        const loss = typeof result.history.loss?.[0] === 'number' ? result.history.loss[0] : 0;
+        this.trainedCount += examples.length;
+        this.totalWeightUpdates += examples.length;
 
-    const loss = typeof result.history.loss?.[0] === 'number' ? result.history.loss[0] : 0;
-    this.trainedCount += examples.length;
-    this.totalWeightUpdates += examples.length;
+        console.log(`[NN] Trained on ${examples.length} positions, loss=${loss.toFixed(4)}, total=${this.trainedCount}`);
+      } finally {
+        xsTensor.dispose();
+        ysTensor.dispose();
+      }
+    };
 
-    console.log(`[NN] Trained on ${examples.length} positions, loss=${loss.toFixed(4)}, total=${this.trainedCount}`);
+    const task = this.fitQueue.then(run);
+    this.fitQueue = task.catch(() => {});
+    await task;
   }
 
   serializeWeights(): { shape: number[]; data: number[] }[] {
