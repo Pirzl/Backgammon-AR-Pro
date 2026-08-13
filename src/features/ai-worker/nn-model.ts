@@ -21,10 +21,31 @@ export class AINNModel {
     const output = tf.layers.dense({ units: 1, activation: 'tanh' }).apply(hidden);
     this.model = tf.model({ inputs: input, outputs: output as tf.SymbolicTensor });
     this.model.compile({
-      optimizer: tf.train.sgd(0.005),
+      optimizer: tf.train.adam(0.01),
       loss: 'meanSquaredError',
     });
     this.loaded = true;
+
+    // (FIX) Load previously trained weights instead of starting from random.
+    // Without this every self-play run begins from scratch and the network can
+    // never accumulate learning across restarts.
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const weightsPath = path.resolve(process.cwd(), 'public', 'model_weights.json');
+    try {
+      if (fs.existsSync(weightsPath)) {
+        const raw = JSON.parse(fs.readFileSync(weightsPath, 'utf-8'));
+        const w = raw.weights ?? raw;
+        if (Array.isArray(w) && w.length > 0) {
+          const ok = this.deserializeWeights(w);
+          console.log(`[NN] Loaded ${w.length} weight layers from ${weightsPath} (ok=${ok})`);
+        }
+      } else {
+        console.log('[NN] No weights file found, starting from random init');
+      }
+    } catch (e) {
+      console.warn('[NN] Failed to load weights, starting random:', e);
+    }
     return this.model;
   }
 
@@ -56,7 +77,7 @@ export class AINNModel {
     const ysTensor = tf.tensor2d(ys);
 
     const result = await this.model.fit(xsTensor, ysTensor, {
-      epochs: 1,
+      epochs: 5,
       batchSize: Math.min(64, examples.length),
       shuffle: true,
       verbose: 0,

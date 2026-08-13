@@ -129,7 +129,7 @@ function getDifficultyWeights(difficulty: Difficulty): { nn: number; heuristic: 
   if (difficulty === 7) return { nn: 0.50, heuristic: 0.50, strategyIntensity: 1.2 };
   if (difficulty === 8) return { nn: 0.60, heuristic: 0.40, strategyIntensity: 1.4 };
   if (difficulty === 9) return { nn: 0.40, heuristic: 0.60, strategyIntensity: 1.7 };
-  return { nn: 0.40, heuristic: 0.60, strategyIntensity: 2.0 };
+  return { nn: 0, heuristic: 1, strategyIntensity: 2.0 };
 }
 
 type AIConfig = {
@@ -138,6 +138,7 @@ type AIConfig = {
   maxSequences: number;
   expectimaxDepth: number;
   oppWeight: number;
+  nn?: number;
 };
 
 function getAIConfig(difficulty: Difficulty): AIConfig {
@@ -150,7 +151,7 @@ function getAIConfig(difficulty: Difficulty): AIConfig {
   if (difficulty === 7) return { mode: 'noisy', noise: 2, maxSequences: 150, expectimaxDepth: 0, oppWeight: 0 };
   if (difficulty === 8) return { mode: 'full', noise: 1, maxSequences: 200, expectimaxDepth: 1, oppWeight: 0.2 };
   if (difficulty === 9) return { mode: 'full', noise: 0, maxSequences: 500, expectimaxDepth: 1, oppWeight: 0.3 };
-  return { mode: 'full', noise: 0, maxSequences: 500, expectimaxDepth: 2, oppWeight: 0.4 };
+  return { mode: 'full', noise: 0, maxSequences: 500, expectimaxDepth: 3, oppWeight: 0.5, nn: 0 };
 }
 
 function pickRandom<T>(items: T[]): T | null {

@@ -2,7 +2,12 @@ import type { Move, PlayerColor, GameState } from './types';
 import { getValidMoves, applyMove } from './rules';
 import { getAvailableDice } from './rules';
 
-const MAX_SEQUENCES = 300;
+// Cap on enumerated full-turn sequences. The theoretical maximum for any roll
+// is 5670 (doubles 1-1); a flat 300 cap silently dropped the majority of
+// legal lines on doubles, so the master search never saw its best move.
+// Raised to cover full enumeration; the eval loop still slices to
+// config.maxSequences (<=500 at L9-10) so live cost is unchanged.
+const MAX_SEQUENCES = 6000;
 
 function boardKey(board: number[]): string {
   return board.join(',');
