@@ -69,8 +69,8 @@ npx tsx src/features/ai-worker/training/cli.ts \
 ## 7. Known pre-existing issues (NOT in scope of this branch, flagged for later)
 
 - `tsc -b` fails with 3 pre-existing errors in `nn-model.ts`: `node:fs`, `node:path`, `process` (no `@types/node` in `tsconfig.app.json`; these lines run under Node/tsx, not the browser build).
-- Browser model architecture mismatch (E2): `public/ai/tfjs_model/tfjs_model/model.json` is `198→512(+BN+Dropout)→256→128→1`; `applyLocalWeights` always fails; browser never uses trained weights.
-- `WEIGHTS_VERSION` mismatch (`cli.ts`=244664 vs `game-board/nn-model.ts`=244663) → permanent "Stale model weights detected" warning.
+- ~~Browser model architecture mismatch (E2)~~ **FIXED (Direction 1)**: `NNModel.load()` now builds the 198→40→1 architecture in code (matching the training pipeline) and applies `/model_weights.json` directly; `setWeights` succeeds. The old 512-unit base model (`public/ai/tfjs_model/tfjs_model/model.json`) is no longer loaded by the app (kept in repo). Verified headlessly (`Applied model weights (trained_count=244664)`) and with `vite build`.
+- `WEIGHTS_VERSION` mismatch (`cli.ts`=244664 vs `game-board/nn-model.ts`=244663) → permanent "Stale model weights detected" warning. Partially softened: the warning now fires only when the checkpoint is OLDER than `WEIGHTS_VERSION` (trained_count < 244663), so freshly trained files (large counters) no longer warn. Cache-busting `?v=WEIGHTS_VERSION` still requires a manual bump after each retrain.
 - `scripts/train-selfplay.ts` (`npm run train:ai`) is broken on master (imports `getBestSequence`/`setNNEvaluator` which no longer exist in `expectimax.ts`).
 - Legacy scripts under `scripts/ai-training/*.ts` still use the old `SelfPlayRunner` API (`depth`, `storeTranspositions`) and will break.
 
