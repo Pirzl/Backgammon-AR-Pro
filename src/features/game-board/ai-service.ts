@@ -129,7 +129,7 @@ function getDifficultyWeights(difficulty: Difficulty): { nn: number; heuristic: 
   if (difficulty === 7) return { nn: 0.50, heuristic: 0.50, strategyIntensity: 1.2 };
   if (difficulty === 8) return { nn: 0.60, heuristic: 0.40, strategyIntensity: 1.4 };
   if (difficulty === 9) return { nn: 0.40, heuristic: 0.60, strategyIntensity: 1.7 };
-  return { nn: 0, heuristic: 1, strategyIntensity: 2.0 };
+  return { nn: 0.6, heuristic: 0.4, strategyIntensity: 2.0 };
 }
 
 type AIConfig = {
