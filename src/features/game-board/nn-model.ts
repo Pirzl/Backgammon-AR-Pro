@@ -3,34 +3,54 @@ import type { PlayerColor } from '../../entities/game/types';
 import { getBarIndex, getOffIndex } from '../../entities/game/rules';
 
 /**
- * Expected trained_count of /model_weights.json. Bump this after every retrain so the
- * browser busts its cache (fetch ?v=...) and warns when stale weights are still loaded.
+ * Minimum trained_count we expect from /model_weights.json. Bump this after a
+ * published retrain so the browser can warn when a *stale* (older) checkpoint is
+ * still loaded. NOTE: trained_count is a GROWING counter, not a fixed version, so
+ * the warning must fire only when loadedCount < WEIGHTS_VERSION, never when newer.
  */
 export const WEIGHTS_VERSION = 244663;
 
 /**
  * Manages the TensorFlow.js Neural Network model for Backgammon position evaluation.
- * Loads base model from /ai/tfjs_model/tfjs_model/model.json and applies optional local weights
- * from /model_weights.json so self-play training results take effect in the browser.
+ *
+ * The browser builds the SAME 198->40->1 architecture in code as the training
+ * pipeline (src/features/ai-worker/nn-model.ts). Previously this loaded the
+ * 512-unit /ai/tfjs_model base whose weight shapes never matched the trained
+ * checkpoint, so setWeights() always threw and the browser NEVER used trained
+ * weights. Building in code guarantees the shapes line up with model_weights.json.
  */
 export class NNModel {
   private model: tf.LayersModel | null = null;
   private isLoading: boolean = false;
 
-  async load(path: string = '/ai/tfjs_model/tfjs_model/model.json'): Promise<void> {
+  async load(): Promise<void> {
     if (this.model || this.isLoading) return;
     this.isLoading = true;
     try {
-      console.log('AI: Loading Neural Network from', path);
-      this.model = await tf.loadLayersModel(path);
-      console.log('AI: Neural Network base model loaded successfully');
+      console.log('AI: Building 198->40->1 model for position evaluation');
+      this.model = this.buildModel();
+      console.log('AI: Neural Network model built successfully');
       await this.applyLocalWeights();
     } catch (error) {
-      console.error('AI: Failed to load Neural Network model:', error);
+      console.error('AI: Failed to build Neural Network model:', error);
       this.model = null;
     } finally {
       this.isLoading = false;
     }
+  }
+
+  /** Mirrors ai-worker/nn-model.ts ensureModel architecture (198->40->1, tanh). */
+  private buildModel(): tf.LayersModel {
+    const input = tf.input({ shape: [198] });
+    const hidden = tf.layers
+      .dense({ units: 40, activation: 'tanh', kernelInitializer: 'zeros', biasInitializer: 'zeros' })
+      .apply(input) as tf.SymbolicTensor;
+    const output = tf.layers
+      .dense({ units: 1, activation: 'tanh', kernelInitializer: 'zeros', biasInitializer: 'zeros' })
+      .apply(hidden) as tf.SymbolicTensor;
+    const model = tf.model({ inputs: input, outputs: output });
+    model.compile({ optimizer: tf.train.adam(0.01), loss: 'meanSquaredError' });
+    return model;
   }
 
   private async applyLocalWeights(): Promise<void> {
@@ -39,9 +59,10 @@ export class NNModel {
     if (!payload || !payload.weights || payload.weights.length === 0) return;
     try {
       const loadedCount = payload.trained_count ?? -1;
-      if (loadedCount !== WEIGHTS_VERSION) {
+      // Only warn when the checkpoint is OLDER than what we expect.
+      if (loadedCount >= 0 && loadedCount < WEIGHTS_VERSION) {
         console.warn(
-          `AI: Stale model weights detected (trained_count=${loadedCount}, expected ${WEIGHTS_VERSION}). ` +
+          `AI: Stale model weights detected (trained_count=${loadedCount}, expected >= ${WEIGHTS_VERSION}). ` +
             `The page may be showing an older checkpoint.`
         );
       }
@@ -86,9 +107,9 @@ export class NNModel {
     } catch (e) {
       console.warn('AI: Supabase weights fetch failed, using static asset:', e);
     }
-    // Static fallback (cache-busted with WEIGHTS_VERSION).
+    // Static fallback.
     try {
-      const resp = await fetch(`/model_weights.json?v=${WEIGHTS_VERSION}`);
+      const resp = await fetch('/model_weights.json');
       if (!resp.ok) return null;
       return (await resp.json()) as {
         weights?: { shape: number[]; data: number[] }[];
