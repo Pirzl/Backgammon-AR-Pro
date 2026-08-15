@@ -43,6 +43,10 @@ const EVAL_GAMES = argNum('--eval-games', 40);
 const EPOCHS = argNum('--epochs', 3);
 const NN_BLEND = argNum('--nn-blend', 1.0);
 const SELF_PLAY_BLEND = argNum('--self-play-blend', 1.0);
+// Auto-stop: once STOP_STREAK consecutive evals reach >= STOP_RATE, exit cleanly
+// so Colab/GPU runs can be fire-and-forget (no manual Interrupt needed).
+const STOP_RATE = argNum('--stop-rate', 0.60);
+const STOP_STREAK = argNum('--stop-streak', 2);
 const OPPONENT = args.includes('--opponent=heuristic') ? 'heuristic' : 'self';
 const LABEL: 'outcome' | 'td0' = args.includes('--label=outcome') ? 'outcome' : 'td0';
 
@@ -82,6 +86,7 @@ async function main(): Promise<void> {
     console.log('[GPU] tfjs-node-gpu no disponible, usando CPU/JS backend');
   }
   await aiModel.ensureModel();
+  let consecutivePass = 0;
 
   await runner.runForever(async (game) => {
     // On-policy: fit on THIS game's positions only (TD-Gammon recipe).
@@ -108,6 +113,17 @@ async function main(): Promise<void> {
       try {
         const t = await runTournament({ games: EVAL_GAMES, blend: NN_BLEND, nn: aiModel });
         console.log(JSON.stringify({ event: 'eval', game: gamesDone, ...t }));
+        const rate = (t as unknown as { nnWinRate?: number }).nnWinRate ?? (t as unknown as { rate?: number }).rate ?? 0;
+        if (rate >= STOP_RATE) {
+          consecutivePass++;
+          if (consecutivePass >= STOP_STREAK) {
+            console.log(`[AutoStop] ${STOP_STREAK} consecutive evals >= ${STOP_RATE} -> stopping at game ${gamesDone}`);
+            await persist(gamesDone);
+            process.exit(0);
+          }
+        } else {
+          consecutivePass = 0;
+        }
       } catch (e) {
         console.warn('[Eval] tournament failed:', e);
       }
