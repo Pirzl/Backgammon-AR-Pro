@@ -1,6 +1,7 @@
 import * as tf from '@tensorflow/tfjs';
 import type { PlayerColor } from '../../entities/game/types';
 import { getBarIndex, getOffIndex } from '../../entities/game/rules';
+import { NET_ARCH, buildLayers } from '../ai-worker/training/net-arch';
 
 /**
  * Cache-busting version for the static /model_weights.json asset. Bump this after a
@@ -9,7 +10,8 @@ import { getBarIndex, getOffIndex } from '../../entities/game/rules';
  * (trained_count < WEIGHTS_VERSION), since trained_count is a growing counter and no
  * longer equals this constant.
  */
-export const WEIGHTS_VERSION = 244663;
+// bumped for the wide-net (198→256→128→64→1) retrain on 2026-08-15
+export const WEIGHTS_VERSION = 260815;
 
 /**
  * Manages the TensorFlow.js Neural Network model for Backgammon position evaluation.
@@ -44,10 +46,9 @@ export class NNModel {
 
   /** 198→40→1 tanh net, matching ai-worker/nn-model.ts ensureModel(). */
   private buildModel(): tf.LayersModel {
-    const input = tf.input({ shape: [198] });
-    const hidden = tf.layers.dense({ units: 40, activation: 'tanh' }).apply(input);
-    const output = tf.layers.dense({ units: 1, activation: 'tanh' }).apply(hidden);
-    return tf.model({ inputs: input, outputs: output as tf.SymbolicTensor });
+    const model = buildLayers(tf, NET_ARCH);
+    console.log(`AI: Built ${NET_ARCH.input}→${NET_ARCH.hidden.join('→')}→${NET_ARCH.output} model for position evaluation`);
+    return model;
   }
 
   private async applyLocalWeights(): Promise<void> {

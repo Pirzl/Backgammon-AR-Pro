@@ -72,6 +72,15 @@ async function persist(games: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // En Colab/GPU: tfjs-node-gpu debe importarse ANTES que @tensorflow/tfjs.
+  // En local/CPU cae a @tensorflow/tfjs normal. Nunca afecta al build del navegador
+  // (cli.ts está excluido de tsconfig.app.json).
+  try {
+    await import('@tensorflow/tfjs-node-gpu');
+    console.log('[GPU] tfjs-node-gpu activado');
+  } catch {
+    console.log('[GPU] tfjs-node-gpu no disponible, usando CPU/JS backend');
+  }
   await aiModel.ensureModel();
 
   await runner.runForever(async (game) => {

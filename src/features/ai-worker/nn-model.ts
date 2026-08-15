@@ -1,6 +1,7 @@
 import * as tf from '@tensorflow/tfjs';
 import type { PlayerColor } from '../../entities/game/types';
 import { getBarIndex, getOffIndex } from '../../entities/game/rules';
+import { NET_ARCH, buildLayers } from './training/net-arch';
 
 export interface TrainingExample {
   board: number[];
@@ -17,10 +18,7 @@ export class AINNModel {
 
   async ensureModel(): Promise<tf.LayersModel> {
     if (this.model) return this.model;
-    const input = tf.input({ shape: [198] });
-    const hidden = tf.layers.dense({ units: 40, activation: 'tanh' }).apply(input);
-    const output = tf.layers.dense({ units: 1, activation: 'tanh' }).apply(hidden);
-    this.model = tf.model({ inputs: input, outputs: output as tf.SymbolicTensor });
+    this.model = buildLayers(tf, NET_ARCH);
     this.model.compile({
       optimizer: tf.train.adam(0.01),
       loss: 'meanSquaredError',
