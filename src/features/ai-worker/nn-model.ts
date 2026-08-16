@@ -18,44 +18,46 @@ export class AINNModel {
 
   async ensureModel(): Promise<tf.LayersModel> {
     if (this.model) return this.model;
-    this.model = buildLayers(tf, NET_ARCH);
-    this.model.compile({
-      optimizer: tf.train.adam(0.01),
+    const model = buildLayers(tf, NET_ARCH);
+    // FIX (260816): stable LR 5e-4 at compile time so TD(0) learning is stable
+    // (high LR collapsed ReLU units -> output stuck at -1.0).
+    model.compile({
+      optimizer: tf.train.adam(0.0005),
       loss: 'meanSquaredError',
     });
+    this.model = model;
     this.loaded = true;
 
-    // (FIX) Load previously trained weights instead of starting from random.
-    // Without this every self-play run begins from scratch and the network can
-    // never accumulate learning across restarts.
+    // (FIX) Load previously trained weights from the deployed JSON via fetch
+    // (browser-safe; do NOT use node:fs here). Without this every self-play run
+    // begins from scratch and the network can never accumulate learning.
     // Validate tensor count + shapes against the live model BEFORE setWeights so an
     // incompatible file (e.g. the old 198->40->1 arch) fails loudly instead of
     // silently falling back to random and looking like "training did nothing".
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const weightsPath = path.resolve(process.cwd(), 'public', 'model_weights.json');
+    const weightsUrl = `${import.meta.env.BASE_URL}model_weights.json`;
     try {
-      if (fs.existsSync(weightsPath)) {
-        const raw = JSON.parse(fs.readFileSync(weightsPath, 'utf-8'));
-        const w = raw.weights ?? raw;
+      const res = await fetch(weightsUrl);
+      if (res.ok) {
+        const raw = await res.json();
+        const w = (raw as any).weights ?? raw;
         if (Array.isArray(w) && w.length > 0) {
-          const expected = this.model!.getWeights();
+          const expected = model.getWeights();
           const compatible =
             w.length === expected.length &&
-            w.every((l, i) => {
+            w.every((l: any, i: number) => {
               const sh = (l && l.shape) || null;
               const exp = expected[i]?.shape ?? null;
               if (!Array.isArray(sh) || !exp) return false;
-              return sh.length === exp.length && sh.every((s, j) => s === exp[j]);
+              return sh.length === exp.length && sh.every((s: number, j: number) => s === exp[j]);
             });
           if (!compatible) {
             console.warn(
-              `[NN] ${weightsPath} has ${w.length} tensors / mismatched shapes vs model (${expected.length}). ` +
+              `[NN] ${weightsUrl} has ${w.length} tensors / mismatched shapes vs model (${expected.length}). ` +
                 'Starting from random init (wide-net base). Train to populate this file.',
             );
           } else {
             const ok = this.deserializeWeights(w);
-            console.log(`[NN] Loaded ${w.length} weight layers from ${weightsPath} (ok=${ok})`);
+            console.log(`[NN] Loaded ${w.length} weight layers from ${weightsUrl} (ok=${ok})`);
           }
         }
       } else {
@@ -64,7 +66,7 @@ export class AINNModel {
     } catch (e) {
       console.warn('[NN] Failed to load weights, starting random:', e);
     }
-    return this.model;
+    return model;
   }
 
   async evaluate(board: number[], turn: PlayerColor): Promise<number> {
@@ -125,8 +127,6 @@ export class AINNModel {
           batchSize: Math.min(64, examples.length),
           shuffle: true,
           verbose: 0,
-          learningRate: 0.0005,
-          clipNorm: 1.0,
         });
 
         const loss = typeof result.history.loss?.[0] === 'number' ? result.history.loss[0] : 0;
