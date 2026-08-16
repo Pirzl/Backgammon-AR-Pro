@@ -60,10 +60,16 @@ def deserialize_weights(model, weights):
 
 
 def forward_batch(model, boards, turns):
-    """boards: int32 (N,30); turns: list/N of 'white'/'black'."""
+    """boards: int32 (N,30); turns: list/N of 'white'/'black'.
+
+    Uses model(xs, training=False) directly (graph execution) instead of
+    model.predict — predict builds a tf.data pipeline per call which is
+    extremely slow for the small batches (1..thousands) we evaluate during
+    self-play move selection. This is the key speedup.
+    """
     turns_arr = np.asarray(turns, dtype=object) if not isinstance(turns, np.ndarray) else turns
     xs = encode_batch(boards, turns_arr)
-    return model.predict(xs, batch_size=2048, verbose=0).reshape(-1)
+    return model(xs, training=False).numpy().reshape(-1)
 
 
 def play_one_game(model, exploration, max_moves, rng):
@@ -132,11 +138,22 @@ def is_double(dice):
     return dice[0] == dice[1]
 
 
-def self_play_dataset(model, games, exploration, max_moves, rng):
+def self_play_dataset(model, games, exploration, max_moves, rng, progress_every=200):
     data = []
     for g in range(games):
         data.extend(play_one_game(model, exploration, max_moves, rng))
+        if (g + 1) % progress_every == 0:
+            print(f'  ...{g + 1}/{games} partidas generadas', flush=True)
     return data
+
+
+def save_model(model, out, total_trained):
+    w = serialize_weights(model)
+    os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
+    with open(out, 'w') as f:
+        json.dump(w, f)
+    print(f'[{datetime.now().strftime("%H:%M:%S")}] guardado {out} '
+          f'| {total_trained} posiciones', flush=True)
 
 
 def main():
@@ -158,7 +175,6 @@ def main():
 
     rng = random.Random(args.seed)
     np.random.seed(args.seed)
-    os.makedirs(os.path.dirname(args.out) or '.', exist_ok=True)
 
     model = build_model()
     if args.weights:
@@ -166,32 +182,34 @@ def main():
             deserialize_weights(model, json.load(f))
         print('reanudando desde', args.weights)
 
-    print('Arrancando entrenamiento rapido (self-play, NumPy)...')
+    print('Arrancando entrenamiento rapido (self-play, NumPy)...', flush=True)
+    print('CONSEJO: no pares el notebook; cada partida tarda poco. Progreso cada '
+          f'{args.save_every} partidas + cada 200 en consola.', flush=True)
     total_trained = 0
     done = 0
-    while done < args.games:
-        chunk = min(args.save_every, args.games - done)
-        data = self_play_dataset(model, chunk, args.exploration, args.max_moves, rng)
-        if not data:
-            break
-        Xb = np.array([encode_board_single(b, t) for b, t, _ in data], dtype=np.float32)
-        y = np.array([d[2] for d in data], dtype=np.float32)
-        model.fit(Xb, y, batch_size=args.batch_size, epochs=args.epochs,
-                  verbose=0, shuffle=True)
-        total_trained += len(data)
-        done += chunk
-        print(f'[{datetime.now().strftime("%H:%M:%S")}] {done}/{args.games} partidas | '
-              f'{total_trained} posiciones | guardado {args.out}')
-        model.get_weights()  # keep
-        w = serialize_weights(model)
-        with open(args.out, 'w') as f:
-            json.dump(w, f)
+    try:
+        while done < args.games:
+            chunk = min(args.save_every, args.games - done)
+            data = self_play_dataset(model, chunk, args.exploration,
+                                     args.max_moves, rng)
+            if not data:
+                break
+            Xb = np.array([encode_board_single(b, t) for b, t, _ in data], dtype=np.float32)
+            y = np.array([d[2] for d in data], dtype=np.float32)
+            model.fit(Xb, y, batch_size=args.batch_size, epochs=args.epochs,
+                      verbose=0, shuffle=True)
+            total_trained += len(data)
+            done += chunk
+            save_model(model, args.out, total_trained)
+    except KeyboardInterrupt:
+        print('\n[Ctrl+C] guardando modelo parcial...', flush=True)
+        save_model(model, args.out, total_trained)
+        print('Modelo parcial guardado. Puedes reanudar con --weights.', flush=True)
+        return
 
     # final save
-    w = serialize_weights(model)
-    with open(args.out, 'w') as f:
-        json.dump(w, f)
-    print('FINAL guardado en', args.out, '| posiciones totales', total_trained)
+    save_model(model, args.out, total_trained)
+    print('FINAL guardado en', args.out, '| posiciones totales', total_trained, flush=True)
 
 
 def encode_board_single(board, turn):
