@@ -159,6 +159,10 @@ def main():
     rng = random.Random(a.seed)
     print('BACKEND =', tf.config.list_physical_devices('GPU'))
 
+    out_dir = os.path.dirname(a.out)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
     model = build_model()
     if a.weights and os.path.exists(a.weights):
         raw = json.load(open(a.weights))
@@ -173,8 +177,8 @@ def main():
         board, recorded = play_one_game(model, a.opponent, a.exploration, a.max_moves, rng)
         examples = make_examples(model, board, recorded, rng)
         if examples:
-            xs = np.array([encode_board(b, t) for b, t in examples], dtype=np.float32)
-            ys = np.array([[ex[2]] for ex in examples], dtype=np.float32)
+            xs = np.array([encode_board(b, t) for b, t, _ in examples], dtype=np.float32)
+            ys = np.array([[target] for _, _, target in examples], dtype=np.float32)
             model.fit(xs, ys, epochs=a.epochs, batch_size=min(64, len(examples)),
                       shuffle=True, verbose=0)
             trained_count += len(examples)
