@@ -28,6 +28,9 @@ export class AINNModel {
     // (FIX) Load previously trained weights instead of starting from random.
     // Without this every self-play run begins from scratch and the network can
     // never accumulate learning across restarts.
+    // Validate tensor count + shapes against the live model BEFORE setWeights so an
+    // incompatible file (e.g. the old 198->40->1 arch) fails loudly instead of
+    // silently falling back to random and looking like "training did nothing".
     const fs = await import('node:fs');
     const path = await import('node:path');
     const weightsPath = path.resolve(process.cwd(), 'public', 'model_weights.json');
@@ -36,8 +39,24 @@ export class AINNModel {
         const raw = JSON.parse(fs.readFileSync(weightsPath, 'utf-8'));
         const w = raw.weights ?? raw;
         if (Array.isArray(w) && w.length > 0) {
-          const ok = this.deserializeWeights(w);
-          console.log(`[NN] Loaded ${w.length} weight layers from ${weightsPath} (ok=${ok})`);
+          const expected = this.model!.getWeights();
+          const compatible =
+            w.length === expected.length &&
+            w.every((l, i) => {
+              const sh = (l && l.shape) || null;
+              const exp = expected[i]?.shape ?? null;
+              if (!Array.isArray(sh) || !exp) return false;
+              return sh.length === exp.length && sh.every((s, j) => s === exp[j]);
+            });
+          if (!compatible) {
+            console.warn(
+              `[NN] ${weightsPath} has ${w.length} tensors / mismatched shapes vs model (${expected.length}). ` +
+                'Starting from random init (wide-net base). Train to populate this file.',
+            );
+          } else {
+            const ok = this.deserializeWeights(w);
+            console.log(`[NN] Loaded ${w.length} weight layers from ${weightsPath} (ok=${ok})`);
+          }
         }
       } else {
         console.log('[NN] No weights file found, starting from random init');
@@ -97,11 +116,17 @@ export class AINNModel {
       const ysTensor = tf.tensor2d(ys);
 
       try {
+        // FIX (260816): stable LR + gradient clipping. The previous default LR
+        // (0.001) with no clip killed hidden units on the wide net (ReLU->0),
+        // collapsing the output to -1.0 for every input. 5e-4 + clipNorm=1.0
+        // keeps TD(0) learning stable so the winrate can actually climb.
         const result = await this.model!.fit(xsTensor, ysTensor, {
           epochs,
           batchSize: Math.min(64, examples.length),
           shuffle: true,
           verbose: 0,
+          learningRate: 0.0005,
+          clipNorm: 1.0,
         });
 
         const loss = typeof result.history.loss?.[0] === 'number' ? result.history.loss[0] : 0;
