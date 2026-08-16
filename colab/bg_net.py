@@ -98,7 +98,7 @@ def play_one_game(model, opponent, exploration, max_moves, rng):
                 return [evaluate_position(b, mover, 2.0) for b in afters]
 
         eps = 1.0 if is_repeat else (exploration if is_nn else 0.0)
-        picked = pick_best_full_turn(board, dice, turn, evaluator, max_sequences=192, epsilon=eps, rng=rng)
+        picked = pick_best_full_turn(board, dice, turn, evaluator, max_sequences=192, epsilon=eps, rng=rng.random)
         seq = picked['sequence']
         if seq:
             for m in seq:
@@ -243,9 +243,9 @@ def run_tournament(model, n_games, rng):
                 return [evaluate_position(b, mover, 2.0) for b in afters]
 
             if turn == red_color:
-                picked = pick_best_full_turn(board, dice, turn, red_eval, max_sequences=96, epsilon=0, rng=rng)
+                picked = pick_best_full_turn(board, dice, turn, red_eval, max_sequences=96, epsilon=0, rng=rng.random)
             else:
-                picked = pick_best_full_turn(board, dice, turn, heur_eval, max_sequences=96, epsilon=0, rng=rng)
+                picked = pick_best_full_turn(board, dice, turn, heur_eval, max_sequences=96, epsilon=0, rng=rng.random)
             seq = picked['sequence']
             if seq:
                 for m in seq:
