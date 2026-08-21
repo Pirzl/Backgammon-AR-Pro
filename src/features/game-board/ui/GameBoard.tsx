@@ -48,7 +48,6 @@ import { useChat } from '../../networking/lib/useChat';
 import { logTelemetry } from '../../../shared/lib/telemetry';
 import { isFeatureEnabled } from '../../../shared/lib/featureFlags';
 import { applyMove, getAvailableDice, isValidMove } from '../../../entities/game/rules';
-import { DiceButton } from '../../../shared/ui/DiceButton/DiceButton';
 import { supabase } from '../../../shared/api/supabase'; // NEW: Added import
 
 import { rollDice } from '../../../entities/game/utils';
@@ -2393,24 +2392,12 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
           }}
         >
           {/* Eliminado: Equity Bar. Gemini devuelve resultados erróneos de la posición. */}
-          {/* ── LEFT FAB STRIP: Roll Dice + Undo ─────────────────────────────────
-               Always visible on the left edge of the game area (all screen sizes).
-               On desktop the full sidebar already has these, but they're still
-               useful as quick-access buttons without opening the sidebar.
-               Positioned so they don't overlap the board on any breakpoint. */}
+
+          {/* ── LEFT FAB STRIP: Undo + Coach (small icon buttons, left edge) ──── */}
           <div
-            className="absolute left-2 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-3 pointer-events-auto"
+            className="absolute left-2 top-1/2 -translate-y-1/2 z-40 flex flex-col gap-3 pointer-events-auto"
             style={{ left: 'max(0.5rem, env(safe-area-inset-left))' }}
           >
-            {/* Roll Dice FAB */}
-            {optimisticState.dice.length === 0 && !state.winner && isTurnActive && !(state.cubeOwner === null && state.cube > 1) && (
-              <DiceButton
-                onClick={handleRollDice}
-                disabled={isPending}
-                size="md"
-                className="shadow-2xl"
-              />
-            )}
             {/* Undo FAB */}
             {optimisticState.history.length > 0 && (
               <button
@@ -2465,6 +2452,8 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             onAcceptDouble={handleAcceptDouble}
             onDenyDouble={handleDropDouble}
             isTrainingMode={isTrainingModeActive}
+            onRollDice={handleRollDice}
+            canRoll={optimisticState.dice.length === 0 && !state.winner && isTurnActive && !(state.cubeOwner === null && state.cube > 1)}
             containerRef={containerRef}
             dimensions={dimensions}
             getPixelCoordinates={getPixelCoordinates}
