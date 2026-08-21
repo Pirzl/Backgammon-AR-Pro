@@ -198,6 +198,7 @@ export function RollingDiceButton({ disabled = false, onRoll, className = '' }: 
 
   return (
     <button
+      id="btn-dado"
       type="button"
       onClick={handleClick}
       disabled={disabled}
