@@ -289,6 +289,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   const stateWinnerRef = useRef<'white' | 'black' | null>(null);
   const stateHistoryLenRef = useRef<number>(0);
   const stateRef = useRef(state);
+  // Serializes rapid Undo presses: only ONE undo may be in flight at a time so
+  // every broadcast corresponds to exactly one executed local pop (keeps the
+  // two H2H history stacks mirrored under button mashing).
+  const undoLockRef = useRef(false);
 
   // Keep refs in sync with the latest state values
   useEffect(() => { myColorRef.current = myColor; }, [myColor]);
@@ -1025,15 +1029,20 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
             // ─── Security / Turn Guard ────────────────────────────────────────
             // MOVE_CHECKER from remote is only valid when it is NOT our turn.
+            // UNDO_MOVE from remote is only valid when it is NOT our turn too:
+            // only the active player may undo their own moves, so an UNDO that
+            // arrives while WE are on turn is the opponent trying to roll back
+            // OUR moves — drop it (mirrors the MOVE_CHECKER rule).
             // SYNC_DICE from remote is allowed even if refs briefly lag.
             // Hand-tracking moves go through onDrop → broadcastGameUpdate('MOVE_CHECKER')
             // and are governed by the same guard.
             const isDoublingEvent = ['OFFER_DOUBLE', 'TAKE_DOUBLE', 'DROP_DOUBLE'].includes(normalizedEvent);
             const isMoveEvent = normalizedEvent === 'MOVE_CHECKER';
+            const isUndoEvent = normalizedEvent === 'UNDO_MOVE';
 
             console.log(`[Sync ← Receiver] Processing ${normalizedEvent} from remote. Turn: ${currentTurn}, MyColor: ${currentMyColor}`);
 
-            if (!currentWinner && currentMyColor && currentTurn === currentMyColor && isMoveEvent && !isDoublingEvent) {
+            if (!currentWinner && currentMyColor && currentTurn === currentMyColor && (isMoveEvent || isUndoEvent) && !isDoublingEvent) {
                 console.warn(`[Sync ← Security] Ignored remote ${normalizedEvent} during MY turn. (Turn: ${currentTurn}, LocalColor: ${currentMyColor})`);
                 return;
             }
@@ -1057,8 +1066,12 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
             // Auto-open doubling modal for the RECEIVING player when opponent offers a double.
             // Guard: only open if it is NOT my own turn (i.e. the offer came from the other side).
-            if (normalizedEvent === 'OFFER_DOUBLE' && currentMyColor && currentTurn === currentMyColor) {
-                // currentTurn is still MY color → I am the one being offered the double
+            // (FIX: was `currentTurn === currentMyColor` — inverted. The offerer dispatches
+            // OFFER_DOUBLE on THEIR turn, so the receiving client's pre-dispatch turn is the
+            // OFFERER's color, never the receiver's. `===` therefore never fired and the
+            // opponent was never prompted to accept/decline/double-down. Must be `!==`.)
+            if (normalizedEvent === 'OFFER_DOUBLE' && currentMyColor && currentTurn !== currentMyColor) {
+                // currentTurn is still the OFFERER's color → the double was offered to me
                 setShowDoublingModal(true);
             }
         }
@@ -1885,9 +1898,29 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
   }, [dispatch, broadcastGameUpdate, initialRoomId, user?.id]);
 
   const handleUndo = useCallback(() => {
-    startTransition(() => {
-      dispatch({ type: 'UNDO_MOVE' });
-      broadcastGameUpdate('UNDO_MOVE');
+    // FIX (H2H sync): turn-ownership guard — only the player whose turn it is
+    // may undo. The idle opponent must NEVER be able to roll back the active
+    // player's moves (they share the same mirrored history stack).
+    const myColorNow = myColorRef.current;
+    if (!myColorNow || stateTurnRef.current !== myColorNow) return; // not my turn
+    if (stateWinnerRef.current) return;                              // game over
+    if (undoLockRef.current) return;                                 // one undo in flight
+    if (stateHistoryLenRef.current === 0) return;                    // nothing to undo
+
+    undoLockRef.current = true;
+    startTransition(async () => {
+      try {
+        // Pre-checks above guarantee history is non-empty and it is our turn,
+        // and the reducer now no-ops gracefully (no throw) if a concurrent
+        // event emptied history in the meantime -> local and remote stay
+        // symmetric. Broadcast AFTER the local pop has executed (not on every
+        // press) so a rapid burst cannot emit UNDO_MOVE events that outrun
+        // their own local reducer calls and desync the mirrored history.
+        await dispatch({ type: 'UNDO_MOVE' });
+        broadcastGameUpdate('UNDO_MOVE');
+      } finally {
+        undoLockRef.current = false;
+      }
     });
   }, [dispatch, broadcastGameUpdate]);
 
@@ -2398,8 +2431,11 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
             className="absolute left-2 top-1/2 -translate-y-1/2 z-40 flex flex-col gap-3 pointer-events-auto"
             style={{ left: 'max(0.5rem, env(safe-area-inset-left))' }}
           >
-            {/* Undo FAB */}
-            {optimisticState.history.length > 0 && (
+            {/* Undo FAB — FIX: only the player whose turn it is may undo.
+                In H2H both clients mirror the same history, so without the
+                isTurnActive gate the idle opponent saw the button and could
+                roll back the active player's moves on both boards. */}
+            {optimisticState.history.length > 0 && isTurnActive && !state.winner && (
               <button
                 onClick={handleUndo}
                 aria-label="Deshacer"
@@ -2497,53 +2533,10 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
 
              {/* DESKTOP ROLL BUTTON REMOVED PER USER REQUEST - Using Small Button Only */}
 
-            {(() => {
-              const usedCounts: Record<number, number> = {};
-              state.usedDice.forEach(d => usedCounts[d] = (usedCounts[d] || 0) + 1);
+             {/* 2D result squares REMOVED — dice now land in 3D on the felt zone via
+                 <DiceOverlay>, mounted inside <Board>. */}
 
-              return state.dice.map((die, i) => {
-                const count = usedCounts[die] || 0;
-                const isUsed = count > 0;
-                if (isUsed) {
-                  usedCounts[die] = count - 1;
-                }
-
-                const isWhiteTurn = state.turn === 'white';
-                const dieBg = isWhiteTurn 
-                    ? 'linear-gradient(135deg, #fff 0%, #e0e0e0 100%)'
-                    : 'linear-gradient(135deg, #dc2626 0%, #991b1b 100%)';
-                
-                const dotColor = isWhiteTurn ? 'text-black' : 'text-white';
-                const borderColor = isWhiteTurn ? 'border-gray-300' : 'border-red-900';
-
-                return (
-                  <div 
-                    key={`die-${i}-${state.dice.join('')}`}
-                    className={`
-                      w-[clamp(28px,12vw,64px)] h-[clamp(28px,12vw,64px)] rounded-xl shadow-[0_10px_30px_rgba(0,0,0,0.5)] flex items-center justify-center
-                      text-[clamp(1rem,8vw,2.25rem)] font-black ${dotColor} border-2 ${borderColor}
-                      ${isUsed ? 'opacity-40 grayscale blur-sm' : 'opacity-100 scale-110'}
-                      animate-[diceRoll_2s_ease-out_forwards]
-                    `}
-                    style={{
-                      background: dieBg,
-                      boxShadow: isUsed ? 'none' : '0 20px 40px rgba(0,0,0,0.4), inset -2px -2px 5px rgba(0,0,0,0.1)'
-                    }}
-                  >
-                    <style>{`
-                      @keyframes diceRoll {
-                        0% { transform: translateY(-300px) rotate(720deg) scale(0.5); opacity: 0; }
-                        60% { transform: translateY(20px) rotate(10deg) scale(1.1); opacity: 1; }
-                        80% { transform: translateY(-10px) rotate(-5deg) scale(1.05); }
-                        100% { transform: translateY(0) rotate(0) scale(1.1); }
-                      }
-                    `}</style>
-                    {die}
-                  </div>
-                );
-              });
-            })()}
-         </div>
+             </div>
 
           {/* Waiting Message REMOVED Per User Request */}
 

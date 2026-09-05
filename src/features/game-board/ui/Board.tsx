@@ -11,6 +11,7 @@ import { isFeatureEnabled } from '../../../shared/lib/featureFlags';
 import { logTelemetry } from '../../../shared/lib/telemetry';
 import { mirrorBoardForPlayer, mirrorPointId } from '../lib/mirrorBoard';
 import { RollingDiceButton } from '../../../shared/ui/DiceButton/RollingDiceButton';
+import { DiceOverlay } from './DiceOverlay';
 
 export interface BoardGeometryEx {
   x: number;
@@ -371,7 +372,7 @@ export function Board({
           transition-all duration-300
           overflow-hidden
           border-[4px] md:border-[12px] border-[#4a3c31] /* BORDERS MOVED HERE (Always Visible) */
-          ${isPending ? 'pointer-events-none grayscale-[0.5]' : ''}
+          ${isPending ? 'pointer-events-none' : ''}
         `}
         style={{
           boxShadow: '0 20px 50px -12px rgba(0, 0, 0, 0.8)'
@@ -540,6 +541,9 @@ export function Board({
           <span className="absolute bottom-1 left-0 right-0 text-center text-[10px] text-white font-black uppercase tracking-widest">FUERA</span>
         </div>
       </div>
+
+      {/* --- DICE RESULT OVERLAY (3D dice landing on the central-left felt zone) --- */}
+      <DiceOverlay geometry={geometry} state={state} />
 
       {/* --- CHECKER OVERLAY LAYER (Absolute Positioning - Global Overlay) --- */}
       <div className="absolute inset-0 z-50 pointer-events-none">

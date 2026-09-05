@@ -35,8 +35,13 @@ export function DoublingCubeModal({
   if (!isOpen) return null;
 
   // Determine what actions are available
-  const canOffer = 
-    cubeOwner === null && cubeValue < 64 && currentTurn === myColor && !diceRolled;
+  // canOffer mirrors the reducer rule: the cube may be offered when it is
+  // neutral (cubeOwner null) OR when the current player owns it (redouble).
+  // (Previous gate required cubeOwner === null, so the cube OWNER never saw an
+  //  offer button even though the reducer + the info text said he could — that
+  //  blocked x2→x4→…→x64 redoubles after a take.)
+  const canOffer =
+    (cubeOwner === null || cubeOwner === myColor) && cubeValue < 64 && currentTurn === myColor && !diceRolled;
   const canTake = 
     cubeOwner === null && cubeValue > 1 && currentTurn === myColor && !diceRolled;
   const canDrop = 
