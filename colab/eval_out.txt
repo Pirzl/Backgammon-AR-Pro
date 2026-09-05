@@ -1,0 +1,16 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1786897824.746576   19728 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1786897828.439304   19728 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1786897830.505231   19728 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: SSE3 SSE4.1 SSE4.2 AVX AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING:tensorflow:TensorFlow GPU support is not available on native Windows for TensorFlow >= 2.11. Even if CUDA/cuDNN are installed, GPU will not be used. Please use WSL2 or the TensorFlow-DirectML plugin.
+NEW  <- ../dist/model_weights.json
+BASE <- model_300.json
+  [100/500] NEW%(white)=87.0 BASE%(black)=13.0
+  [200/500] NEW%(white)=85.0 BASE%(black)=15.0
+  [300/500] NEW%(white)=84.7 BASE%(black)=15.3
+  [400/500] NEW%(white)=85.5 BASE%(black)=14.5
+  [500/500] NEW%(white)=86.0 BASE%(black)=14.0
+[NEW vs BASE] 500 games in 598s | NEW(white) wins 430 (86.0%) | BASE(black) wins 70 (14.0%) | stalemate 0
+[NEW vs NEW sanity] 100 games in 80s | white 61 (61.0%) black 39 (39.0%) -> ~50% means no bias/bug

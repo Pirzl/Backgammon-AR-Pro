@@ -1,11 +1,24 @@
-# MediaPipe WASM: serve with the correct MIME type (required for streaming compilation)
+# Fix: "Expected a JavaScript-or-Wasm module script but the server responded
+# with a MIME type of text/html" on InfinityFree / Apache hosting.
+# Forces correct MIME types for ES modules and stops any SPA rewrite rule from
+# serving index.html (text/html) in place of real .js/.css assets.
+
+AddType application/javascript .js
+AddType text/css .css
+AddType application/json .json
+AddType image/svg+xml .svg
 AddType application/wasm .wasm
+
+# Disable content negotiation that can mis-route assets by extension.
+Options -MultiViews
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
-  RewriteBase /
-  RewriteRule ^index\.html$ - [L]
-  RewriteCond %{REQUEST_FILENAME} !-f
-  RewriteCond %{REQUEST_FILENAME} !-d
-  RewriteRule . /index.html [L]
+  # If the requested file or directory exists, serve it directly (no rewrite).
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+  # SPA fallback ONLY for extension-less routes (never for .js/.css/.png...).
+  RewriteCond %{REQUEST_URI} !\.[a-zA-Z0-9]+$ [NC]
+  RewriteRule ^ /index.html [L]
 </IfModule>

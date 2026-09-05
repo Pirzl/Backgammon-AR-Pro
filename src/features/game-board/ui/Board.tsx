@@ -10,6 +10,8 @@ import { useBoardGeometry } from '../lib/useBoardGeometry';
 import { isFeatureEnabled } from '../../../shared/lib/featureFlags';
 import { logTelemetry } from '../../../shared/lib/telemetry';
 import { mirrorBoardForPlayer, mirrorPointId } from '../lib/mirrorBoard';
+import { RollingDiceButton } from '../../../shared/ui/DiceButton/RollingDiceButton';
+import { DiceOverlay } from './DiceOverlay';
 
 export interface BoardGeometryEx {
   x: number;
@@ -32,6 +34,10 @@ interface BoardProps {
   onAcceptDouble?: () => void;
   onDenyDouble?: () => void;
   isTrainingMode?: boolean; // NEW: Disable cube if training mode is active
+
+  // NEW: Roll dice button — rendered just below the centered doubling cube
+  onRollDice?: () => void;
+  canRoll?: boolean;
 
   // New Props for Lifted State
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -65,6 +71,8 @@ export function Board({
   myColor,
   onCubeClick,
   isTrainingMode = false,
+  onRollDice,
+  canRoll = false,
   containerRef,
   dimensions,
   boardOpacity,
@@ -364,7 +372,7 @@ export function Board({
           transition-all duration-300
           overflow-hidden
           border-[4px] md:border-[12px] border-[#4a3c31] /* BORDERS MOVED HERE (Always Visible) */
-          ${isPending ? 'pointer-events-none grayscale-[0.5]' : ''}
+          ${isPending ? 'pointer-events-none' : ''}
         `}
         style={{
           boxShadow: '0 20px 50px -12px rgba(0, 0, 0, 0.8)'
@@ -448,31 +456,39 @@ export function Board({
               : (isOnWhiteSide || (isCentered && state.cube === 1));
 
             return (
-              <div
-                className={`w-[80%] aspect-square max-w-[64px] md:max-w-[80px] rounded-lg border-2 border-amber-900/50 flex items-center justify-center shadow-[0_5px_15px_rgba(0,0,0,0.5)] z-30 transition-all duration-300 ${isTrainingMode ? 'opacity-50 cursor-not-allowed grayscale' :
-                  onCubeClick ? 'cursor-pointer hover:scale-110 active:scale-95' : 'cursor-default'
-                  } group ${isCentered ? '' : shouldShowOnTop ? 'absolute top-2' : 'absolute bottom-2'
-                  }`}
-                style={{
-                  background: 'linear-gradient(135deg, #eecfa1 0%, #8b4513 100%)',
-                  ...(isCentered ? {} : { position: 'absolute', width: '60%' })
-                }}
-                onClick={isTrainingMode ? undefined : onCubeClick}
-                title={
-                  isTrainingMode
-                    ? 'Apuestas deshabilitadas en Modo Entrenamiento'
-                    : state.cubeOwner === null && state.cube > 1
-                      ? 'Double offered - Click to accept/reject'
-                      : state.cubeOwner === myColor && state.dice.length === 0
-                        ? 'Click to offer double'
-                        : state.cubeOwner === (myColor === 'white' ? 'black' : 'white') && state.dice.length === 0
-                          ? 'Opponent can offer double'
-                          : 'Doubling Cube'
-                }
-              >
-                <span className="text-lg md:text-2xl font-black text-amber-900 group-hover:text-amber-950">
-                  {displayValue}
-                </span>
+              <div className="flex flex-col items-center w-[80%] max-w-[64px] md:max-w-[80px]">
+                <div
+                  className={`w-full aspect-square rounded-lg border-2 border-amber-900/50 flex items-center justify-center shadow-[0_5px_15px_rgba(0,0,0,0.5)] z-30 transition-all duration-300 ${isTrainingMode ? 'opacity-50 cursor-not-allowed grayscale' :
+                    onCubeClick ? 'cursor-pointer hover:scale-110 active:scale-95' : 'cursor-default'
+                    } group ${isCentered ? '' : shouldShowOnTop ? 'absolute top-2' : 'absolute bottom-2'
+                    }`}
+                  style={{
+                    background: 'linear-gradient(135deg, #eecfa1 0%, #8b4513 100%)',
+                    ...(isCentered ? {} : { position: 'absolute', width: '60%' })
+                  }}
+                  onClick={isTrainingMode ? undefined : onCubeClick}
+                  title={
+                    isTrainingMode
+                      ? 'Apuestas deshabilitadas en Modo Entrenamiento'
+                      : state.cubeOwner === null && state.cube > 1
+                        ? 'Double offered - Click to accept/reject'
+                        : state.cubeOwner === myColor && state.dice.length === 0
+                          ? 'Click to offer double'
+                          : state.cubeOwner === (myColor === 'white' ? 'black' : 'white') && state.dice.length === 0
+                            ? 'Opponent can offer double'
+                            : 'Doubling Cube'
+                  }
+                >
+                  <span className="text-lg md:text-2xl font-black text-amber-900 group-hover:text-amber-950">
+                    {displayValue}
+                  </span>
+                </div>
+
+                {canRoll && (
+                  <div className="mt-2 w-full flex justify-center">
+                    <RollingDiceButton onRoll={onRollDice ?? (() => {})} disabled={!canRoll} className="w-full" />
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -525,6 +541,9 @@ export function Board({
           <span className="absolute bottom-1 left-0 right-0 text-center text-[10px] text-white font-black uppercase tracking-widest">FUERA</span>
         </div>
       </div>
+
+      {/* --- DICE RESULT OVERLAY (3D dice landing on the central-left felt zone) --- */}
+      <DiceOverlay geometry={geometry} state={state} />
 
       {/* --- CHECKER OVERLAY LAYER (Absolute Positioning - Global Overlay) --- */}
       <div className="absolute inset-0 z-50 pointer-events-none">
