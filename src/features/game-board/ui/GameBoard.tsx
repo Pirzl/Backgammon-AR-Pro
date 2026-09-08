@@ -51,8 +51,6 @@ import { applyMove, getAvailableDice, isValidMove } from '../../../entities/game
 import { supabase } from '../../../shared/api/supabase'; // NEW: Added import
 
 import { rollDice } from '../../../entities/game/utils';
-import { ReplayDownloader } from './ReplayDownloader';
-
 
 // Types
 import type { Move } from '../../../entities/game/types';
@@ -2905,7 +2903,6 @@ function GameBoardContent({ initialMode = 'ai', initialRoomId }: GameBoardProps)
       {/* First-run instructions tutorial */}
       <FirstRunTutorial isOpen={showTutorial} onClose={() => setShowTutorial(false)} />
       <KeyboardShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
-      <ReplayDownloader />
     </div>
   )
 }

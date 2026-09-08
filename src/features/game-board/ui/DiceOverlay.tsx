@@ -184,7 +184,10 @@ export function DiceOverlay({ geometry, state }: DiceOverlayProps) {
       + Math.round((geometry[15]?.cx ?? 0) * 10) + ','
       + Math.round((geometry[15]?.cy ?? 0) * 10)
     : 'none';
-  const key = `${rollKey}|${usedKey}|${geomKey}`;
+  // Screen-size fingerprint: re-runs when the window is resized/rotated so the dice
+  // re-render at the new responsive size (window.innerWidth drives pxPerUnit).
+  const viewKey = `${window.innerWidth}x${window.innerHeight}`;
+  const key = `${rollKey}|${usedKey}|${geomKey}|${viewKey}`;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -221,18 +224,23 @@ export function DiceOverlay({ geometry, state }: DiceOverlayProps) {
       const n = diceValues.length;
       const zone = computeZoneCenter(geometry, container, n);
 
-      // === On-screen die size MUST match RollingDiceButton (user verdict) =========
-      // RollingDiceButton renders 1.0 world-unit cubes through PerspectiveCamera(43,1)
-      // at z=3. Visible world height at that distance = 2*3*tan(21.5deg) ≈ 2.3635 units,
-      // drawn onto its canvas height clamp(46px,9vw,64px) → px/unit = hBtn / 2.3635.
-      // We reproduce that SAME px/unit over the (larger) board canvas by placing our
-      // camera at dist = 3 * hBoard / hBtn, so 1 world unit maps to hBtn/2.3635 px —
-      // pixel-identical die size to the button dice. (Old code placed dice with
-      // scale = hPx/8 but rendered with a z=3.4 frustum ≈ hPx/2.68 px/unit → ~4-5x too big.)
+      // === On-screen die size scales with the BOARD (responsive) =================
+      // Old rule pinned the die to the "Tirar" button size (hBtn = clamp(46px,9vw,64px)),
+      // so dice looked identical on every screen. Thomas (2026-09-08): dice must adapt —
+      // a bit bigger on large screens, smaller on mobile. We tie the die's on-screen px
+      // to the board canvas WIDTH (which tracks the screen/board), clamped to sane
+      // bounds. Small phone (~375px board) → ~16px die; desktop (~1200px) → ~38px die.
       const FOV = 43;
-      const BUTTON_CAM_DIST = 3; // RollingDiceButton camera distance
-      const visibleAtBtnDist = 2 * BUTTON_CAM_DIST * Math.tan((FOV / 2) * (Math.PI / 180)); // ≈2.3635
-      const hBtn = Math.min(64, Math.max(46, window.innerWidth * 0.09)); // clamp(46px,9vw,64px)
+      const dieEdge = 1.0; // world-unit edge (kept; only camera distance changes)
+      const wPx = container.clientWidth || 320;
+      const hPx = container.clientHeight || 240;
+      // px of one world unit = target on-screen die size. Screen-width proportional
+      // (Thomas 2026-09-08: dice must adapt to screen size — small on phones, a bit
+      // bigger on desktops). Phone 375px → 16px die; desktop 1440px → ~34px die.
+      const pxPerUnit = Math.min(34, Math.max(16, window.innerWidth * 0.026));
+      // PerspectiveCamera(43): visible world height at distance d = 2*d*tan(FOV/2).
+      // We want that height to span hPx px, i.e. pxPerUnit = hPx / (2*d*tan(FOV/2)).
+      const dist = hPx / (2 * pxPerUnit * Math.tan((FOV / 2) * (Math.PI / 180)));
 
       const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 200);
       const resize = () => {
@@ -246,14 +254,9 @@ export function DiceOverlay({ geometry, state }: DiceOverlayProps) {
       const ro = new ResizeObserver(resize);
       ro.observe(container);
 
-      const wPx = container.clientWidth || 320;
-      const hPx = container.clientHeight || 240;
-      const pxPerUnit = hBtn / visibleAtBtnDist; // px per world unit — equals the button's
-      const dist = BUTTON_CAM_DIST * (hPx / hBtn); // widen frustum over the board canvas
       camera.position.set(0, 0, dist);
       camera.lookAt(0, 0, 0);
 
-      const dieEdge = 1.0; // same world-unit edge as the button die
       const spacing = dieEdge * 1.2; // center-to-center; button centers are ±0.6 (1.2 apart)
       const totalW = dieEdge + (n - 1) * spacing;
 

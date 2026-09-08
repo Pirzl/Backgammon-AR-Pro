@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { Brain, Users, Hand, Video, Shield, Zap, ChevronRight, Home, Menu, X } from 'lucide-react';
+import { Brain, Users, Hand, Video, Shield, Zap, ChevronRight, Menu, X } from 'lucide-react';
 import styles from './LandingPage.module.css';
 import { BackgammonScroll } from '../components/BackgammonScroll';
 import { WisdomWidget } from '../features/ai-worker/ui/WisdomWidget';
@@ -9,8 +9,28 @@ import { OctagonMenu } from '../components/OctagonMenu/OctagonMenu';
 import { Board } from '../features/game-board/ui/Board';
 import { useBoardDimensions } from '../features/game-board/lib/useBoardDimensions';
 import { INITIAL_BOARD } from '../entities/game/constants';
-import { useMemo } from 'react';
+import { useScrollReveal } from '../hooks/useScrollReveal';
 import type { GameState } from '../entities/game/types';
+
+/* Whole-section scroll reveal (CSS classes, IntersectionObserver) */
+function SectionReveal({ children }: { children: ReactNode }) {
+  const [ref, isVisible] = useScrollReveal<HTMLDivElement>();
+  return (
+    <div
+      ref={ref}
+      className={`${styles['reveal']} ${isVisible ? styles['is-visible'] : ''}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+const itemMotion = {
+  initial: { opacity: 0, y: 24 },
+  whileInView: { opacity: 1, y: 0 },
+  viewport: { once: true, margin: '-40px' },
+  transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const },
+};
 
 export function LandingPage() {
   const [showBackToTop, setShowBackToTop] = useState(false);
@@ -55,10 +75,10 @@ export function LandingPage() {
   useEffect(() => {
     const handleScroll = () => {
       const scrolled = window.scrollY;
-      
+
       // Back to Top button (after 300px)
       setShowBackToTop(scrolled > 300);
-      
+
       // FAB button (after hero section, approximately 800px)
       setShowFAB(scrolled > 800);
     };
@@ -81,6 +101,11 @@ export function LandingPage() {
     setShowOctagon(true);
   };
 
+  const handleOnlinePlay = () => {
+    setInitialOctagonIndex(1);
+    setShowOctagon(true);
+  };
+
   return (
     <div className={styles['landing-page']}>
       {/* Scrolling Background Animation */}
@@ -99,7 +124,7 @@ export function LandingPage() {
       {/* Mobile Menu Sidebar */}
       <div className={`${styles['mobile-menu']} ${isMenuOpen ? styles['open'] : ''}`}>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '2rem' }}>
-          <button aria-label="Cerrar menú" onClick={() => setIsMenuOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--gold-soft)', cursor: 'pointer' }}>
+          <button aria-label="Cerrar menú" onClick={() => setIsMenuOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--color-accent)', cursor: 'pointer' }}>
             <X size={32} />
           </button>
         </div>
@@ -124,7 +149,7 @@ export function LandingPage() {
             navigate('/auth/register-benefits');
             setIsMenuOpen(false);
           }}
-          style={{ background: 'transparent', border: '1px solid var(--gold-soft)' }}
+          style={{ background: 'transparent', border: '1px solid var(--color-accent-border)' }}
         >
           Registrarse
         </button>
@@ -134,10 +159,10 @@ export function LandingPage() {
       <nav className={styles['landing-nav']}>
         <div className={styles['landing-nav-container']}>
           <div className={styles['landing-logo']}>
-            <Zap size={28} color="var(--gold-soft)" />
+            <Zap size={26} color="var(--color-accent)" />
             VIVO
           </div>
-          
+
           {/* Desktop Links */}
           <div className={styles['landing-nav-links']}>
             <a className={styles['landing-nav-link']} href="#gestos-ar">
@@ -179,482 +204,346 @@ export function LandingPage() {
         </div>
       </nav>
 
-      {/* Sección Hero */}
+      {/* Hero — ENGINEERED PEAK (one awe moment on the page) */}
       <section className={styles['landing-hero']}>
         <motion.div
           className={styles['landing-hero-content']}
-          initial={{ opacity: 0, y: 30 }}
+          initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
+          transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
         >
+          <span className={styles['landing-hero-eyebrow']}>
+            Backgammon · AR · IA
+          </span>
           <h1 className={styles['landing-hero-title']}>
-            Backgammon VIVO
+            Backgammon <span className={styles['gold']}>VIVO</span>
           </h1>
           <p className={styles['landing-hero-subtitle']}>
-            Experimenta el juego ancestral reimaginado con seguimiento de manos AR, IA inteligente y videochat en directo. 
-            Juega donde quieras, en cualquier dispositivo.
+            El juego ancestral, reimaginado: controla el tablero con tus manos,
+            desafía a una IA Gran Maestro y juega con amigos por video en vivo.
           </p>
           <div className={styles['landing-hero-buttons']}>
             <motion.button
               className={`${styles['landing-hero-button']} ${styles['landing-hero-button-primary']}`}
               onClick={handleAIPlay}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
             >
-              <Brain size={24} />
+              <Brain size={22} />
               Desafiar IA
-              <ChevronRight size={20} />
+              <ChevronRight size={18} />
             </motion.button>
             <motion.button
               className={`${styles['landing-hero-button']} ${styles['landing-hero-button-secondary']}`}
-              onClick={() => {
-                setInitialOctagonIndex(1);
-                setShowOctagon(true);
-              }}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
+              onClick={handleOnlinePlay}
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
             >
-              <Users size={24} />
+              <Users size={22} />
               Jugar Online
             </motion.button>
-          </div>
-
-          {/* AI Wisdom Widget - Visible on All Devices */}
-          <div className="mt-8 w-full flex justify-center scale-90 sm:scale-100">
-            <WisdomWidget />
           </div>
         </motion.div>
       </section>
 
-      {/* 1. Sección Control por Gestos AR - PRIMERO */}
+      {/* AI proof strip — real product signal, below the peak */}
+      <div className={styles['wisdom-strip']}>
+        <WisdomWidget />
+      </div>
+
+      {/* 1. Sección Control por Gestos AR */}
       <section id="gestos-ar" className={styles['landing-section']}>
-        <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.6 }}
-        >
+        <SectionReveal>
           <h2 className={styles['landing-section-title']}>Control por Gestos AR</h2>
           <p className={styles['landing-section-subtitle']}>
-            Juega sin tocar la pantalla - solo con tus manos
+            Juega sin tocar la pantalla — solo con tus manos
           </p>
 
-          <div className={styles['landing-image-container']}>
+          <motion.div {...itemMotion} className={styles['landing-image-container']}>
             <img 
               src="/gestos.png"
               alt="Gestos de mano para controlar el juego"
               loading="lazy"
               fetchPriority="high"
-              style={{ maxWidth: '100%', height: 'auto', borderRadius: '16px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', border: '1px solid var(--mauve-grey)' }}
+              className={styles['media-frame']}
             />
-          </div>
-        </motion.div>
+          </motion.div>
+        </SectionReveal>
       </section>
 
-      {/* 2. Sección Cómo Jugar - SEGUNDO */}
+      {/* 2. Cómo Jugar — vertical feature rows (no identical card grid) */}
       <section id="como-jugar" className={styles['landing-section']}>
-        <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.6 }}
-        >
+        <SectionReveal>
           <h2 className={styles['landing-section-title']}>Cómo Jugar</h2>
           <p className={styles['landing-section-subtitle']}>
-            ¡Simple para un niño de 8 años, fascinante para uno de 80!
+            Simple para un niño de 8 años, fascinante para uno de 80
           </p>
 
-          <div className={styles['landing-features-grid']}>
-            {/* Control con Manos */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.1, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Hand size={32} />
+          <div className={styles['feature-rows']}>
+            <motion.div {...itemMotion} className={styles['feature-row']}>
+              <div className={styles['feature-row-icon']}>
+                <Hand size={28} />
               </div>
-              <h3 className={styles['landing-feature-title']}>Controla con Tus Manos</h3>
-              <p className={styles['landing-feature-description']}>
-                Usa tu cámara para controlar el juego con gestos de mano. ¡No necesitas tocar nada!
-              </p>
-              <ul className={styles['landing-feature-list']}>
-                <li>👌 Pinza para agarrar fichas</li>
-                <li>✋ Abre para soltar</li>
-                <li>🖱️ O usa ratón/táctil</li>
-              </ul>
+              <div>
+                <h3 className={styles['feature-row-title']}>Controla con tus manos</h3>
+                <p className={styles['feature-row-description']}>
+                  Usa tu cámara para jugar con gestos. Sin tocar nada.
+                </p>
+                <ul className={styles['feature-row-list']}>
+                  <li>👌 Pinza para agarrar fichas</li>
+                  <li>✋ Abre la mano para soltar</li>
+                  <li>🖱️ O usa ratón y táctil</li>
+                </ul>
+              </div>
             </motion.div>
 
-            {/* Fundamentos del Backgammon */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.2, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Zap size={32} />
+            <motion.div {...itemMotion} className={styles['feature-row']}>
+              <div className={styles['feature-row-icon']}>
+                <Zap size={28} />
               </div>
-              <h3 className={styles['landing-feature-title']}>Fundamentos del Backgammon</h3>
-              <p className={styles['landing-feature-description']}>
-                ¡Mueve tus 15 fichas alrededor del tablero y sé el primero en sacarlas todas!
-              </p>
-              <ul className={styles['landing-feature-list']}>
-                <li>🎲 Lanza dados para moverte</li>
-                <li>⚔️ Captura fichas rivales</li>
-                <li>🏆 El primero en sacar todas gana</li>
-              </ul>
+              <div>
+                <h3 className={styles['feature-row-title']}>Fundamentos del backgammon</h3>
+                <p className={styles['feature-row-description']}>
+                  Mueve tus 15 fichas alrededor del tablero y sé el primero en sacarlas todas.
+                </p>
+                <ul className={styles['feature-row-list']}>
+                  <li>🎲 Lanza dados para moverte</li>
+                  <li>⚔️ Captura fichas rivales</li>
+                  <li>🏆 El primero en sacar todas gana</li>
+                </ul>
+              </div>
             </motion.div>
 
-            {/* Inicio Rápido */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.3, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <ChevronRight size={32} />
+            <motion.div {...itemMotion} className={styles['feature-row']}>
+              <div className={styles['feature-row-icon']}>
+                <ChevronRight size={28} />
               </div>
-              <h3 className={styles['landing-feature-title']}>Inicio Rápido</h3>
-              <p className={styles['landing-feature-description']}>
-                ¡Salta directo! La IA te enseñará mientras juegas, o enfrenta amigos online.
-              </p>
-              <ul className={styles['landing-feature-list']}>
-                <li>🤖 Practica vs IA (10 niveles)</li>
-                <li>🌍 Desafía amigos online</li>
-                <li>📊 Sigue tu progreso</li>
-              </ul>
+              <div>
+                <h3 className={styles['feature-row-title']}>Inicio rápido</h3>
+                <p className={styles['feature-row-description']}>
+                  Salta directo: la IA te enseña mientras juegas o desafía a amigos online.
+                </p>
+                <ul className={styles['feature-row-list']}>
+                  <li>🤖 Practica vs IA (10 niveles)</li>
+                  <li>🌍 Desafía amigos online</li>
+                  <li>📊 Sigue tu progreso</li>
+                </ul>
+              </div>
             </motion.div>
           </div>
-        </motion.div>
+        </SectionReveal>
       </section>
 
-      {/* 3. Sección Características - TERCERO */}
+      {/* 3. Características — bento (main IA + supporting stack) */}
       <section id="caracteristicas" className={styles['landing-section']}>
-        <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.6 }}
-        >
+        <SectionReveal>
           <h2 className={styles['landing-section-title']}>Características</h2>
           <p className={styles['landing-section-subtitle']}>
-            Tecnología de vanguardia combinada con jugabilidad atemporal
+            Tecnología de vanguardia con jugabilidad atemporal
           </p>
 
-          <div className={styles['landing-image-container']}>
+          <motion.div {...itemMotion} className={styles['landing-image-container']}>
             <img 
               src="/ar-game-virtual.png"
               alt="Juego Virtual AR"
               loading="lazy"
-              style={{ maxWidth: '580px', width: '100%', height: 'auto', borderRadius: '16px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', border: '1px solid var(--mauve-grey)' }}
+              className={styles['media-frame']}
             />
-          </div>
+          </motion.div>
 
-          <div className={styles['landing-features-grid']}>
-            {/* IA Inteligente */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.1, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Brain size={32} />
-              </div>
-              <h3 className={styles['landing-feature-title']}>IA Inteligente</h3>
-              <p className={styles['landing-feature-description']}>
-                Desafía a una IA adaptativa que aprende de cada partida. Elige dificultad desde Nivel 1 (Principiante) hasta Nivel 10 (Gran Maestro).
+          <div className={styles['bento']}>
+            <motion.div {...itemMotion} className={`${styles['bento-card']} ${styles['bento-card-main']}`}>
+              <h3 className={styles['bento-title']}>
+                <Brain size={26} color="var(--color-accent)" />
+                IA Inteligente
+              </h3>
+              <p className={styles['bento-text']}>
+                Una IA adaptativa que aprende de cada partida. Elige dificultad desde
+                Nivel 1 (Principiante) hasta Nivel 10 (Gran Maestro).
               </p>
               <ul className={styles['landing-feature-list']}>
                 <li>10 niveles de dificultad</li>
-                <li>Aprende de base de datos Supabase</li>
+                <li>Aprende de una base de datos de posiciones</li>
                 <li>Juego instantáneo, sin esperas</li>
               </ul>
             </motion.div>
 
-            {/* Multijugador Ventana de Cristal */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.2, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Video size={32} />
-              </div>
-              <h3 className={styles['landing-feature-title']}>Multijugador Ventana de Cristal</h3>
-              <p className={styles['landing-feature-description']}>
-                Juega con amigos de todo el mundo a través de una "ventana de cristal" — véanse por videochat mientras mueven las piezas en tiempo real.
-              </p>
-              <ul className={styles['landing-feature-list']}>
-                <li>Video peer-to-peer WebRTC</li>
-                <li>Tablero sincronizado en tiempo real</li>
-                <li>Comparte link de sala al instante</li>
-              </ul>
-            </motion.div>
+            <div className={styles['bento-stack']}>
+              <motion.div {...itemMotion} className={styles['bento-card']}>
+                <h3 className={styles['bento-title']}>
+                  <Video size={24} color="var(--color-accent)" />
+                  Ventana de Cristal
+                </h3>
+                <p className={styles['bento-text']}>
+                  Juega con amigos de todo el mundo: véanse por videochat mientras
+                  mueven las piezas en tiempo real.
+                </p>
+                <ul className={styles['landing-feature-list']}>
+                  <li>Video peer-to-peer WebRTC</li>
+                  <li>Tablero sincronizado en tiempo real</li>
+                </ul>
+              </motion.div>
 
-            {/* Seguimiento de Manos AR */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.3, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Hand size={32} />
-              </div>
-              <h3 className={styles['landing-feature-title']}>Seguimiento de Manos AR</h3>
-              <p className={styles['landing-feature-description']}>
-                Usa tu cámara para controlar el juego con gestos de mano. ¡Pinza para agarrar, abre para soltar — es como magia!
-              </p>
-              <ul className={styles['landing-feature-list']}>
-                <li>Detección MediaPipe hands</li>
-                <li>Activa/desactiva cámara cuando quieras</li>
-                <li>Funciona en todos los dispositivos modernos</li>
-              </ul>
-            </motion.div>
+              <motion.div {...itemMotion} className={styles['bento-card']}>
+                <h3 className={styles['bento-title']}>
+                  <Hand size={24} color="var(--color-accent)" />
+                  Seguimiento de manos AR
+                </h3>
+                <p className={styles['bento-text']}>
+                  Pinza para agarrar, abre para soltar — como magia.
+                </p>
+                <ul className={styles['landing-feature-list']}>
+                  <li>Detección MediaPipe hands</li>
+                  <li>Cámara activable cuando quieras</li>
+                </ul>
+              </motion.div>
+            </div>
           </div>
-        </motion.div>
+        </SectionReveal>
       </section>
 
-      {/* 4. Sección Reglas Completas del Backgammon - CUARTO (SIN IMAGEN DEL TABLERO) */}
+      {/* 4. Reglas — compact two-column rules (no 6-card grid) */}
       <section id="reglas" className={styles['landing-section']}>
-        <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.6 }}
-        >
+        <SectionReveal>
           <h2 className={styles['landing-section-title']}>Reglas del Backgammon</h2>
           <p className={styles['landing-section-subtitle']}>
-            Todo lo que necesitas saber para dominar este juego de 5,000 años
+            Todo lo que necesitas para dominar este juego de 5,000 años
           </p>
 
-          <div className={styles['landing-features-grid']}>
-            {/* Objetivo */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.1, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Zap size={32} />
+          <div className={styles['rules-grid']}>
+            <motion.div {...itemMotion} className={styles['rule-card']}>
+              <span className={styles['rule-icon']}>🎯</span>
+              <div>
+                <h3 className={styles['rule-title']}>Objetivo</h3>
+                <p className={styles['rule-body']}>
+                  Sé el primero en sacar tus 15 fichas del tablero. Las blancas
+                  avanzan en sentido horario; las rojas, antihorario.
+                </p>
               </div>
-              <h3 className={styles['landing-feature-title']}>🎯 Objetivo</h3>
-              <p className={styles['landing-feature-description']}>
-                Sé el primero en sacar todas tus 15 fichas del tablero. Las fichas blancas se mueven en sentido horario, las rojas en sentido antihorario.
-              </p>
             </motion.div>
 
-            {/* Preparación */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.2, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <ChevronRight size={32} />
+            <motion.div {...itemMotion} className={styles['rule-card']}>
+              <span className={styles['rule-icon']}>⚙️</span>
+              <div>
+                <h3 className={styles['rule-title']}>Preparación</h3>
+                <div className={styles['rule-body']}>
+                  <ul>
+                    <li>Cada jugador tiene 15 fichas</li>
+                    <li>Se lanzan 2 dados para moverse</li>
+                    <li>El dado más alto mueve primero</li>
+                  </ul>
+                </div>
               </div>
-              <h3 className={styles['landing-feature-title']}>⚙️ Preparación</h3>
-              <ul className={styles['landing-feature-list']}>
-                <li>Cada jugador tiene 15 fichas</li>
-                <li>Las fichas comienzan en posiciones específicas</li>
-                <li>Se lanzan 2 dados para moverse</li>
-                <li>El dado más alto mueve primero</li>
-              </ul>
             </motion.div>
 
-            {/* Movimientos */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.3, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Hand size={32} />
+            <motion.div {...itemMotion} className={styles['rule-card']}>
+              <span className={styles['rule-icon']}>🎲</span>
+              <div>
+                <h3 className={styles['rule-title']}>Movimientos</h3>
+                <div className={styles['rule-body']}>
+                  <ul>
+                    <li>Lanza 2 dados cada turno</li>
+                    <li>Dobles = 4 movimientos</li>
+                    <li>Juega ambos dados si es posible</li>
+                  </ul>
+                </div>
               </div>
-              <h3 className={styles['landing-feature-title']}>🎲 Movimientos</h3>
-              <ul className={styles['landing-feature-list']}>
-                <li>Lanza 2 dados cada turno</li>
-                <li>Mueve según cada dado (separado)</li>
-                <li>Dobles = 4 movimientos</li>
-                <li>Debes jugar ambos dados si es posible</li>
-              </ul>
             </motion.div>
 
-            {/* Capturar */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.4, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Shield size={32} />
+            <motion.div {...itemMotion} className={styles['rule-card']}>
+              <span className={styles['rule-icon']}>⚔️</span>
+              <div>
+                <h3 className={styles['rule-title']}>Capturar</h3>
+                <p className={styles['rule-body']}>
+                  Cae en un punto con una sola ficha enemiga y la capturas. La ficha
+                  capturada va a la barra y debe reentrar antes de mover.
+                </p>
               </div>
-              <h3 className={styles['landing-feature-title']}>⚔️ Capturar</h3>
-              <p className={styles['landing-feature-description']}>
-                Si caes en un punto con UNA sola ficha enemiga, la capturas. La ficha capturada va a la BARRA y debe volver a entrar antes de hacer otros movimientos.
-              </p>
             </motion.div>
 
-            {/* Sacar Fichas */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.5, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Home size={32} />
+            <motion.div {...itemMotion} className={styles['rule-card']}>
+              <span className={styles['rule-icon']}>🏡</span>
+              <div>
+                <h3 className={styles['rule-title']}>Sacar fichas</h3>
+                <p className={styles['rule-body']}>
+                  Con todas tus fichas en tu casa puedes empezar a sacarlas del
+                  tablero según los dados (bearing off).
+                </p>
               </div>
-              <h3 className={styles['landing-feature-title']}>🏡 Sacar Fichas (Bearing Off)</h3>
-              <p className={styles['landing-feature-description']}>
-                Cuando TODAS tus fichas están en tu "CASA" (último cuadrante), puedes empezar a sacarlas del tablero según los dados.
-              </p>
             </motion.div>
 
-            {/* Ganar */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.6, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Zap size={32} />
+            <motion.div {...itemMotion} className={styles['rule-card']}>
+              <span className={styles['rule-icon']}>🏆</span>
+              <div>
+                <h3 className={styles['rule-title']}>Ganar</h3>
+                <p className={styles['rule-body']}>
+                  El primer jugador en sacar todas sus fichas gana. Simple, pero
+                  profundamente estratégico.
+                </p>
               </div>
-              <h3 className={styles['landing-feature-title']}>🏆 Ganar</h3>
-              <p className={styles['landing-feature-description']}>
-                El primer jugador en sacar TODAS sus 15 fichas del tablero es el GANADOR. ¡Simple pero estratégico!
-              </p>
             </motion.div>
           </div>
 
-          {/* Diagrama de Ejemplo de Jugada */}
-          <div className={styles['landing-image-container']}>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', marginBottom: '1.5rem', color: 'var(--gold-soft)' }}>
-              Ejemplo de Jugada Ganadora
-            </h3>
+          <motion.div {...itemMotion} className={styles['landing-image-container']}>
+            <h3 className={styles['media-caption']}>Ejemplo de jugada ganadora</h3>
             <img 
               src="/ejemplo.webp"
               alt="Ejemplo de cómo sacar fichas para ganar"
               loading="lazy"
-              style={{ maxWidth: '100%', height: 'auto', borderRadius: '16px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', border: '1px solid var(--mauve-grey)' }}
+              className={styles['media-frame']}
             />
-          </div>
-        </motion.div>
+          </motion.div>
+        </SectionReveal>
       </section>
 
-      {/* Sección Seguridad y Privacidad */}
+      {/* 5. Seguridad — full-width assurance + two supporting cards */}
       <section id="seguridad" className={styles['landing-section']}>
-        <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.6 }}
-        >
-          <h2 className={styles['landing-section-title']}>Seguridad y Privacidad</h2>
+        <SectionReveal>
+          <h2 className={styles['landing-section-title']}>Seguridad y privacidad</h2>
           <p className={styles['landing-section-subtitle']}>
             Tu seguridad y privacidad son nuestras prioridades máximas
           </p>
 
-          <div className={styles['landing-features-grid']}>
-            {/* Encriptación End-to-End */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.1, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Shield size={32} />
-              </div>
-              <h3 className={styles['landing-feature-title']}>Encriptación End-to-End</h3>
-              <p className={styles['landing-feature-description']}>
-                Todo el video y datos del juego se transmiten vía conexión peer-to-peer WebRTC con encriptación.
+          <div className={styles['bento']}>
+            <motion.div {...itemMotion} className={`${styles['bento-card']} ${styles['bento-card-main']} ${styles['bento-single']}`}>
+              <h3 className={styles['bento-title']}>
+                <Shield size={26} color="var(--color-accent)" />
+                Encriptación de extremo a extremo
+              </h3>
+              <p className={styles['bento-text']}>
+                Todo el video y los datos del juego viajan por conexión peer-to-peer
+                WebRTC con encriptación. Nadie en medio puede leerlos.
               </p>
             </motion.div>
 
-            {/* Control de Cámara */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.2, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Video size={32} />
-              </div>
-              <h3 className={styles['landing-feature-title']}>Control de Cámara</h3>
-              <p className={styles['landing-feature-description']}>
-                Tú decides cuándo activar tu cámara. Actívala/desactívala en cualquier momento durante el juego.
+            <motion.div {...itemMotion} className={styles['bento-card']}>
+              <h3 className={styles['bento-title']}>
+                <Video size={24} color="var(--color-accent)" />
+                Control de cámara
+              </h3>
+              <p className={styles['bento-text']}>
+                Tú decides cuándo activarla. Enciéndela o apágala en cualquier
+                momento durante la partida.
               </p>
             </motion.div>
 
-            {/* Sin Datos Personales */}
-            <motion.div
-              className={styles['landing-feature-card']}
-              whileHover={{ y: -8 }}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-50px" }}
-              transition={{ delay: 0.3, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div className={styles['landing-feature-icon']}>
-                <Shield size={32} />
-              </div>
-              <h3 className={styles['landing-feature-title']}>Sin Datos Personales Almacenados</h3>
-              <p className={styles['landing-feature-description']}>
-                No recopilamos información personal. Los datos del juego son anónimos y solo se usan para mejorar la IA.
+            <motion.div {...itemMotion} className={styles['bento-card']}>
+              <h3 className={styles['bento-title']}>
+                <Shield size={24} color="var(--color-accent)" />
+                Sin datos personales
+              </h3>
+              <p className={styles['bento-text']}>
+                No recopilamos información personal. Los datos del juego son
+                anónimos y solo se usan para mejorar la IA.
               </p>
             </motion.div>
           </div>
-        </motion.div>
+        </SectionReveal>
       </section>
 
-      {/* 5. Sección FAQ */}
+      {/* 6. Sección FAQ */}
       <section id="faq" className={styles['landing-section']}>
-        <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.6 }}
-        >
+        <SectionReveal>
           <h2 className={styles['landing-section-title']}>Preguntas Frecuentes (FAQ)</h2>
           <p className={styles['landing-section-subtitle']}>
             Resuelve tus dudas sobre la plataforma y cómo funciona
@@ -669,7 +558,7 @@ export function LandingPage() {
                   aria-expanded={openFaq === index}
                 >
                   {faq.q}
-                  <ChevronRight size={24} className={styles['faq-icon']} />
+                  <ChevronRight size={22} className={styles['faq-icon']} />
                 </button>
                 <div 
                   className={`${styles['faq-answer-wrapper']} ${openFaq === index ? styles['open'] : ''}`}
@@ -683,10 +572,10 @@ export function LandingPage() {
               </div>
             ))}
           </div>
-        </motion.div>
+        </SectionReveal>
       </section>
 
-      {/* Sticky FAB "Play Now" Button - Custom Dice Image */}
+      {/* Sticky FAB "Play Now" Button */}
       {showFAB && !isMenuOpen && (
         <motion.button
           className={styles['fab-button']}
@@ -702,7 +591,7 @@ export function LandingPage() {
           <img 
             src="/dice-fab.png" 
             alt="Jugar" 
-            style={{ width: '100%', height: '100%', objectFit: 'contain', filter: 'drop-shadow(0 0 10px rgba(212, 175, 55, 0.5))' }} 
+            style={{ width: '100%', height: '100%', objectFit: 'contain', filter: 'drop-shadow(0 0 10px rgba(212, 168, 67, 0.5))' }} 
           />
         </motion.button>
       )}
