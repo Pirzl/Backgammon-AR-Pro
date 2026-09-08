@@ -18,9 +18,13 @@ export default defineConfig({
     assetsDir: '',
     rollupOptions: {
       output: {
-        entryFileNames: `[name].js`,
-        chunkFileNames: `[name].js`,
-        assetFileNames: `[name].[ext]`,
+        // FIX (260816): hash in filenames so Cloudflare/InfinityFree can't serve
+        // stale mixed-version chunks across builds (caused "doesn't provide an
+        // export named N" after deploy). index.html references the hashed names,
+        // so each build forces a fresh cache.
+        entryFileNames: `[name].[hash].js`,
+        chunkFileNames: `[name].[hash].js`,
+        assetFileNames: `[name].[hash].[ext]`,
         manualChunks(id) {
           if (id.includes('node_modules')) {
             if (id.includes('react') || id.includes('react-dom')) return 'vendor-react';

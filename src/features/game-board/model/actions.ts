@@ -223,7 +223,12 @@ export async function gameReducer(
 
     case 'UNDO_MOVE': {
       if (state.history.length === 0) {
-        throw new Error('No moves to undo');
+        // Graceful no-op (mirrors MOVE_CHECKER's invalid-move handling).
+        // Throwing here lets a rapid undo burst reject a queued dispatch on
+        // ONE client only -> the two H2H history stacks diverge and the game
+        // sync is lost permanently. Return state unchanged instead.
+        console.warn('[GameReducer] Undo ignored: no moves to undo.');
+        return state;
       }
       
       // Pop last state from history

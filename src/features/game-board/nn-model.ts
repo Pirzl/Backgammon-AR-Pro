@@ -1,35 +1,40 @@
 import * as tf from '@tensorflow/tfjs';
 import type { PlayerColor } from '../../entities/game/types';
 import { getBarIndex, getOffIndex } from '../../entities/game/rules';
+import { NET_ARCH, buildLayers } from '../ai-worker/training/net-arch';
 
 /**
- * Minimum trained_count we expect from /model_weights.json. Bump this after a
- * published retrain so the browser can warn when a *stale* (older) checkpoint is
- * still loaded. NOTE: trained_count is a GROWING counter, not a fixed version, so
- * the warning must fire only when loadedCount < WEIGHTS_VERSION, never when newer.
+ * Cache-busting version for the static /model_weights.json asset. Bump this after a
+ * retrain so the browser does not serve a stale cached copy (fetch ?v=...). The
+ * stale-WARNING is now based on the weights file being OLDER than this version
+ * (trained_count < WEIGHTS_VERSION), since trained_count is a growing counter and no
+ * longer equals this constant.
  */
-export const WEIGHTS_VERSION = 244663;
+// bumped for the wide-net (198→256→128→64→1) retrain on 2026-08-15
+export const WEIGHTS_VERSION = 260815;
 
 /**
  * Manages the TensorFlow.js Neural Network model for Backgammon position evaluation.
  *
- * The browser builds the SAME 198->40->1 architecture in code as the training
- * pipeline (src/features/ai-worker/nn-model.ts). Previously this loaded the
- * 512-unit /ai/tfjs_model base whose weight shapes never matched the trained
- * checkpoint, so setWeights() always threw and the browser NEVER used trained
- * weights. Building in code guarantees the shapes line up with model_weights.json.
+ * Builds the 198→40→1 architecture in code — the SAME architecture used by the
+ * training pipeline (ai-worker/nn-model.ts) — and applies the trained weights from
+ * /model_weights.json (Supabase first, static asset fallback).
+ *
+ * Previously this loaded a large 512-unit base model (/ai/tfjs_model/tfjs_model/model.json)
+ * whose weight shapes never matched the trained checkpoint, so setWeights() always threw
+ * and the browser never used trained weights (E2). Building the architecture in code
+ * guarantees the shapes line up and the self-play results take effect in the browser.
  */
 export class NNModel {
   private model: tf.LayersModel | null = null;
   private isLoading: boolean = false;
 
-  async load(): Promise<void> {
+  async load(_path?: string): Promise<void> {
     if (this.model || this.isLoading) return;
     this.isLoading = true;
     try {
-      console.log('AI: Building 198->40->1 model for position evaluation');
       this.model = this.buildModel();
-      console.log('AI: Neural Network model built successfully');
+      console.log('AI: Built 198→40→1 model for position evaluation');
       await this.applyLocalWeights();
     } catch (error) {
       console.error('AI: Failed to build Neural Network model:', error);
@@ -39,17 +44,10 @@ export class NNModel {
     }
   }
 
-  /** Mirrors ai-worker/nn-model.ts ensureModel architecture (198->40->1, tanh). */
+  /** 198→40→1 tanh net, matching ai-worker/nn-model.ts ensureModel(). */
   private buildModel(): tf.LayersModel {
-    const input = tf.input({ shape: [198] });
-    const hidden = tf.layers
-      .dense({ units: 40, activation: 'tanh', kernelInitializer: 'zeros', biasInitializer: 'zeros' })
-      .apply(input) as tf.SymbolicTensor;
-    const output = tf.layers
-      .dense({ units: 1, activation: 'tanh', kernelInitializer: 'zeros', biasInitializer: 'zeros' })
-      .apply(hidden) as tf.SymbolicTensor;
-    const model = tf.model({ inputs: input, outputs: output });
-    model.compile({ optimizer: tf.train.adam(0.01), loss: 'meanSquaredError' });
+    const model = buildLayers(tf, NET_ARCH);
+    console.log(`AI: Built ${NET_ARCH.input}→${NET_ARCH.hidden.join('→')}→${NET_ARCH.output} model for position evaluation`);
     return model;
   }
 
@@ -59,10 +57,9 @@ export class NNModel {
     if (!payload || !payload.weights || payload.weights.length === 0) return;
     try {
       const loadedCount = payload.trained_count ?? -1;
-      // Only warn when the checkpoint is OLDER than what we expect.
       if (loadedCount >= 0 && loadedCount < WEIGHTS_VERSION) {
         console.warn(
-          `AI: Stale model weights detected (trained_count=${loadedCount}, expected >= ${WEIGHTS_VERSION}). ` +
+          `AI: Stale model weights detected (trained_count=${loadedCount}, older than ${WEIGHTS_VERSION}). ` +
             `The page may be showing an older checkpoint.`
         );
       }
@@ -107,9 +104,9 @@ export class NNModel {
     } catch (e) {
       console.warn('AI: Supabase weights fetch failed, using static asset:', e);
     }
-    // Static fallback.
+    // Static fallback (cache-busted with WEIGHTS_VERSION).
     try {
-      const resp = await fetch('/model_weights.json');
+      const resp = await fetch(`/model_weights.json?v=${WEIGHTS_VERSION}`);
       if (!resp.ok) return null;
       return (await resp.json()) as {
         weights?: { shape: number[]; data: number[] }[];

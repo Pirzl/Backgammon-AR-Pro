@@ -1,24 +1,57 @@
-# Fix: "Expected a JavaScript-or-Wasm module script but the server responded
-# with a MIME type of text/html" on InfinityFree / Apache hosting.
-# Forces correct MIME types for ES modules and stops any SPA rewrite rule from
-# serving index.html (text/html) in place of real .js/.css assets.
+# ============================================
+# .htaccess — VIVO Backgammon (backgammon.free.nf)
+# ============================================
+# Fusion: plantilla verificada 2026-08-08 (MIME + SPA fallback + CSP con TODOS
+# los dominios del juego) + security headers (orden Maestro 2026-09-07) +
+# sanitizacion ?i= (paso 4 Maestro).
+# CSP NOTA: Permissions-Policy permite camera/microphone SELF (el hand-tracking
+# AR y el video chat los necesitan). connect-src incluye turn.time4vps.cloud
+# (TURN WebRTC H2H) y generativelanguage.googleapis.com (Gemini AI).
 
-AddType application/javascript .js
-AddType text/css .css
-AddType application/json .json
-AddType image/svg+xml .svg
-AddType application/wasm .wasm
+<IfModule mod_mime.c>
+  AddType application/javascript .js
+  AddType text/css .css
+  AddType application/json .json
+  AddType image/svg+xml .svg
+  AddType application/wasm .wasm
+</IfModule>
 
-# Disable content negotiation that can mis-route assets by extension.
+# Content negotiation can mis-route requests by extension and serve the wrong
+# file/MIME. Turn it off for predictable asset delivery.
 Options -MultiViews
+
+<IfModule mod_headers.c>
+  # --- Security headers (Maestro 2026-09-07) ---
+  Header set X-Frame-Options "DENY"
+  Header set X-Content-Type-Options "nosniff"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+  Header set X-XSS-Protection "1; mode=block"
+  Header set X-DNS-Prefetch-Control "off"
+  Header set Permissions-Policy "microphone=(self), camera=(self), geolocation=()"
+  Header set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://dlnzupvxtqozhczrenbn.supabase.co blob: https://www.googletagmanager.com; worker-src 'self' blob: https://dlnzupvxtqozhczrenbn.supabase.co; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://*.supabase.co https://ui-avatars.com https://*.google-analytics.com https://*.googletagmanager.com; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://turn.time4vps.cloud https://fonts.googleapis.com https://fonts.gstatic.com https://generativelanguage.googleapis.com https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com https://cdn.jsdelivr.net https://dlnzupvxtqozhczrenbn.supabase.co; object-src 'none'; base-uri 'self';"
+  # HSTS desactivado por ahora: el host free.nf no ha respondido por HTTPS desde
+  # esta maquina; activarlo con includeSubDomains podria bloquear el acceso si el
+  # TLS del hosting falla. Descomentar SOLO tras verificar HTTPS estable:
+  # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+</IfModule>
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
+  RewriteBase /
+
+  # --- Sanitizar ?i= (paso 4 Maestro) ---
+  # Si el query empieza con i= pero NO es un numero entero positivo -> redirigir a /
+  RewriteCond %{QUERY_STRING} ^i= [NC]
+  RewriteCond %{QUERY_STRING} !^i=[0-9]+$ [NC]
+  RewriteRule ^(.*)$ /? [R=301,L]
+
   # If the requested file or directory exists, serve it directly (no rewrite).
   RewriteCond %{REQUEST_FILENAME} -f [OR]
   RewriteCond %{REQUEST_FILENAME} -d
   RewriteRule ^ - [L]
-  # SPA fallback ONLY for extension-less routes (never for .js/.css/.png...).
+  # SPA fallback ONLY for extension-less routes (never .js/.css/.png/.wasm...).
+  # This prevents the host from returning index.html (text/html) in place of a
+  # missing module script, which is what triggers the MIME/Strict-module error.
   RewriteCond %{REQUEST_URI} !\.[a-zA-Z0-9]+$ [NC]
   RewriteRule ^ /index.html [L]
 </IfModule>
